@@ -1,0 +1,115 @@
+# BurstOps local stack.
+#
+# The two dummy-backend replicas are capped at cpus: "1.0" deliberately:
+# gateway.py's PROM_QUERY measures rate(...)*100, i.e. cores x 100 (not
+# %-of-quota), so a smaller CPU cap (e.g. 0.3) could never numerically reach
+# the 80 threshold.
+services:
+  dummy-backend-1:
+    build: { context: ./dummy-backend }
+    container_name: burstops-backend-1
+    cpus: "1.0"
+    mem_limit: 128m
+    restart: unless-stopped
+
+  dummy-backend-2:
+    build: { context: ./dummy-backend }
+    container_name: burstops-backend-2
+    cpus: "1.0"
+    mem_limit: 128m
+    restart: unless-stopped
+
+  dummy-backend:
+    image: nginx:1.27-alpine
+    container_name: burstops-backend-vip
+    volumes:
+      - ./dummy-backend/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - dummy-backend-1
+      - dummy-backend-2
+    restart: unless-stopped
+
+  dummy-serverless:
+    build: { context: ./dummy-serverless }
+    environment:
+      GATEWAY_HMAC_SECRET: ${GATEWAY_HMAC_SECRET:-local-dev-secret-change-in-prod}
+      FUNCTION_KEY: ${FUNCTION_KEY:-local-dev-function-key}
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  cpu-sim:
+    build: { context: ./cpu-sim }
+    environment:
+      INITIAL_CPU_PCT: "20"
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+
+  gateway:
+    build: { context: ./gateway }
+    environment:
+      K8S_UPSTREAM: ${K8S_UPSTREAM:-http://dummy-backend:8000}
+      FUNCTION_UPSTREAM: ${FUNCTION_UPSTREAM:-http://dummy-serverless:8001/calculate}
+      FUNCTION_KEY: ${FUNCTION_KEY:-local-dev-function-key}
+      GATEWAY_HMAC_SECRET: ${GATEWAY_HMAC_SECRET:-local-dev-secret-change-in-prod}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090/api/v1/query}
+    ports:
+      - "8080:8080"
+    depends_on:
+      - dummy-backend
+      - dummy-serverless
+      - prometheus
+      - cpu-sim
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: burstops-cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8082:8080"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.4
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-burstops}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  locust:
+    image: locustio/locust:2.29.1
+    volumes:
+      - ./locust/locustfile.py:/mnt/locust/locustfile.py
+    command: ["-f", "/mnt/locust/locustfile.py", "--host", "http://gateway:8080"]
+    ports:
+      - "8089:8089"
+    depends_on:
+      - gateway
+    restart: unless-stopped

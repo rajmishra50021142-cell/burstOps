@@ -1,0 +1,9 @@
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+location             = "eastasia"            # one of the 5 policy-allowed regions
+python_version       = "3.13"
+monthly_budget_usd   = 50
+budget_alert_emails  = ["you@example.com"]
+budget_start_date    = "2026-09-01T00:00:00Z"
+log_retention_days   = 30
+log_daily_cap_gb     = 0.15                   # < 5 GB/mo always-free grant
+tags                 = {}

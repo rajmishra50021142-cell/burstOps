@@ -1,0 +1,49 @@
+# Pre-existing manifest written in anticipation of Phase 6 — extend, don't recreate.
+# Prometheus relabeling depends on the burstops-namespace label surviving into AKS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: burstops-backend
+  namespace: burstops
+  labels:
+    app: burstops-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: burstops-backend
+  template:
+    metadata:
+      labels:
+        app: burstops-backend
+        # exactly what Prometheus's relabel rules are expected to match in AKS
+        burstops-namespace: burstops
+    spec:
+      containers:
+        - name: backend
+          image: burstopsacr.azurecr.io/burstops-backend:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 250m
+              memory: 128Mi
+            limits:
+              cpu: "1000m"
+              memory: 256Mi
+          # limits matched to the Compose cpus: "1.0" cap on purpose:
+          # gateway.py's PROM_QUERY measures cores x 100, so a 1.0-CPU cap
+          # is what lets the observed metric numerically reach 80.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5

@@ -1,0 +1,23 @@
+# Upgrade B overlay: local multi-replica testing.
+# The base compose maps gateway:8080 to a fixed host port, so --scale
+# conflicts. This overlay adds redis and replaces the fixed mapping with a
+# container-port-only mapping (Docker assigns ephemeral host ports).
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --build --scale gateway=3
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml port --index=N gateway 8080
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: burstops-redis
+    # No persistence, no auth — a routing hint any replica can rebuild in one
+    # poll cycle; durability buys nothing. allkeys-lru caps memory.
+    command: ["--save", "", "--appendonly", "no", "--maxmemory", "32mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  gateway:
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports: !override
+      - "8080"   # container port only -> ephemeral host port per replica

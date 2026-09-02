@@ -1,0 +1,20 @@
+# Upgrade D overlay: adds Jaeger and enables OTLP tracing on the gateway.
+# Do NOT merge into docker-compose.yml — the offline default has tracing off.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.tracing.yml up -d --build
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: burstops-jaeger
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  gateway:
+    environment:
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: burstops-gateway
+      OTEL_BASELINE_SAMPLE_RATIO: "1.0"   # local only — see everything

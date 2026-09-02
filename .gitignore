@@ -1,0 +1,15 @@
+# secrets / state / local tooling — never commit
+.env.azure
+.env
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+crash.log
+**/__pycache__/
+**/.venv/
+**/.pytest_cache/
+**/*.pyc
+.DS_Store
+azure-function/local.settings.json
+.python_packages/

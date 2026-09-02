@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: burstops-prometheus       # must match burstops.json's panel datasource uid
+    access: proxy
+    url: http://prometheus:9090    # compose service name, not localhost
+    isDefault: true
+    editable: false
+    jsonData:
+      # prometheus/prometheus.yml scrapes every 2s; telling Grafana this makes
+      # $__rate_interval resolve to something sane instead of a 15s default.
+      timeInterval: 2s
+      httpMethod: POST

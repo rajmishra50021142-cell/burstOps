@@ -1,0 +1,10 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "GATEWAY_HMAC_SECRET": "local-dev-secret-change-in-prod",
+    "FUNCTION_KEY": "local-dev-function-key",
+    "MAX_CLOCK_SKEW_SECONDS": "300"
+  }
+}

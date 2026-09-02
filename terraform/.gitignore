@@ -1,0 +1,9 @@
+.terraform/
+# .terraform.lock.hcl IS committed deliberately for provider reproducibility.
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+# tfvars contain subscription ids / emails; the example is the template.
+*.tfvars
+!*.tfvars.example

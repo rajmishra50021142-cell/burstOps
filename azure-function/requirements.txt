@@ -1,0 +1,4 @@
+# Single dependency on purpose — every extra wheel lengthens cold start,
+# which is the exact latency this project measures. Do not add packages
+# here without asking (see docs/phase briefs).
+azure-functions==1.25.0
