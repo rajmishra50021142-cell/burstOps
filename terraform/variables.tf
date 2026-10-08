@@ -53,10 +53,14 @@ variable "tags" {
   default = {}
 }
 
-# NOTE (Option B, 2026-09-01): node_vm_size / node_count / kubernetes_version /
-# acr_sku variables were REMOVED along with the AKS cluster and ACR. The
-# subscription's region policy blocks every free-grant VM SKU that meets
-# AKS's minimum node spec, and the cheapest eligible node (~$30/mo from the
-# $100 credit) was rejected as too expensive. The local Docker Compose stack
-# is the cluster; the Azure Function above is the live burst target.
-# See docs/architecture-decision.md for the full reasoning.
+variable "node_vm_size" {
+  type        = string
+  default     = "Standard_B2s_v2"
+  description = "VM size for AKS node pool"
+}
+
+variable "node_count" {
+  type        = number
+  default     = 2
+  description = "Number of worker nodes for the AKS cluster"
+}

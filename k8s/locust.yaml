@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: burstops-locust-cm
+  namespace: burstops-system
+data:
+  locustfile.py: |
+    import os
+    import random
+    from locust import HttpUser, between, task
+
+    BACKEND_URL = os.environ.get("BACKEND_URL", "http://burstops-backend.burstops.svc.cluster.local:8000")
+
+    class BurstOpsUser(HttpUser):
+        wait_time = between(0.1, 0.4)
+
+        @task(85)
+        def calculate(self):
+            self.client.get("/calculate")
+
+        @task(15)
+        def burn_cpu(self):
+            ms = random.choice([1500, 2000, 2500])
+            try:
+                self.client.post(f"{BACKEND_URL}/burn-cpu?ms={ms}", name="/burn-cpu")
+            except Exception:
+                pass
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: burstops-locust
+  namespace: burstops-system
+  labels:
+    app: burstops-locust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: burstops-locust
+  template:
+    metadata:
+      labels:
+        app: burstops-locust
+    spec:
+      containers:
+        - name: locust
+          image: locustio/locust:latest
+          command:
+            - "locust"
+          args:
+            - "-f"
+            - "/mnt/locust/locustfile.py"
+            - "--host"
+            - "http://burstops-gateway.burstops-system.svc.cluster.local:8080"
+            - "--web-host"
+            - "0.0.0.0"
+            - "--web-port"
+            - "8089"
+            - "--web-base-path"
+            - "/locust"
+          env:
+            - name: BACKEND_URL
+              value: "http://burstops-backend.burstops.svc.cluster.local:8000"
+          ports:
+            - containerPort: 8089
+              name: web
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: script-vol
+              mountPath: /mnt/locust
+      volumes:
+        - name: script-vol
+          configMap:
+            name: burstops-locust-cm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: burstops-locust
+  namespace: burstops-system
+  labels:
+    app: burstops-locust
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8089
+      targetPort: 8089
+      name: web
+  selector:
+    app: burstops-locust

@@ -13,3 +13,8 @@ crash.log
 .DS_Store
 azure-function/local.settings.json
 .python_packages/
+k8s/gateway-secret.yaml
+!k8s/gateway-secret.yaml.example
+scratch/
+tfplan
+*.zip

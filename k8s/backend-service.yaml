@@ -1,13 +1,15 @@
-# Pre-existing manifest written in anticipation of Phase 6 — extend, don't recreate.
 apiVersion: v1
 kind: Service
 metadata:
   name: burstops-backend
   namespace: burstops
+  labels:
+    app: burstops-backend
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: burstops-backend
   ports:
-    - port: 8000
+    - name: http
+      port: 8000
       targetPort: 8000

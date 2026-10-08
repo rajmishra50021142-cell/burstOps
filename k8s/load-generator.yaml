@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: burstops-load-test
+  namespace: burstops
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: load-generator
+          image: acrburstopsga3cvf.azurecr.io/burstops-backend:v1
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-c"]
+          args:
+            - |
+              import urllib.request, time, concurrent.futures
+              print("Generating heavy CPU load against backend pods for 60 seconds...")
+              url = "http://burstops-backend.burstops.svc.cluster.local:8000/burn-cpu?ms=4000"
+              end_time = time.time() + 60
+
+              def burn():
+                  while time.time() < end_time:
+                      try:
+                          req = urllib.request.Request(url, method="POST")
+                          urllib.request.urlopen(req, timeout=10)
+                      except Exception as e:
+                          pass
+
+              with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                  futures = [executor.submit(burn) for _ in range(20)]
+                  concurrent.futures.wait(futures)
+              print("Heavy load complete!")

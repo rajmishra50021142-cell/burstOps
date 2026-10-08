@@ -23,3 +23,33 @@ output "location" {
 output "storage_account_name" {
   value = azurerm_storage_account.main.name
 }
+
+output "aks_cluster_name" {
+  value = azurerm_kubernetes_cluster.main.name
+}
+
+output "acr_name" {
+  value = azurerm_container_registry.main.name
+}
+
+output "acr_login_server" {
+  value = azurerm_container_registry.main.login_server
+}
+
+output "gateway_hmac_secret" {
+  value     = random_password.gateway_hmac_secret.result
+  sensitive = true
+}
+
+output "key_vault_uri" {
+  value = azurerm_key_vault.main.vault_uri
+}
+
+output "azure_managed_grafana_endpoint" {
+  value = azurerm_dashboard_grafana.main.endpoint
+}
+
+output "action_group_id" {
+  value = azurerm_monitor_action_group.alerts.id
+}
+

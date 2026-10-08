@@ -4,3 +4,10 @@ metadata:
   name: burstops
   labels:
     app.kubernetes.io/part-of: burstops
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: burstops-system
+  labels:
+    app.kubernetes.io/part-of: burstops

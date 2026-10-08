@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: burstops-redis
+  namespace: burstops-system
+  labels:
+    app: burstops-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: burstops-redis
+  template:
+    metadata:
+      labels:
+        app: burstops-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command:
+            - "redis-server"
+            - "--save"
+            - ""
+            - "--appendonly"
+            - "no"
+            - "--maxmemory"
+            - "32mb"
+            - "--maxmemory-policy"
+            - "allkeys-lru"
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: burstops-redis
+  namespace: burstops-system
+  labels:
+    app: burstops-redis
+spec:
+  type: ClusterIP
+  selector:
+    app: burstops-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379

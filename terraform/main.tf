@@ -111,8 +111,149 @@ resource "azurerm_function_app_flex_consumption" "main" {
   tags = local.common_tags
 }
 
-# ARCHITECTURE DECISION (Option B, 2026-09-01): no AKS cluster, no ACR, no
-# Load Balancer, no public IP. The subscription is region-locked by policy
-# to 5 regions and none offers a free-grant VM SKU meeting AKS's minimum
-# node spec. The local Docker Compose stack IS the cluster; this Function is
-# the live burst target. Full reasoning in docs/architecture-decision.md.
+# --- Azure Container Registry (ACR) -----------------------------------------
+resource "azurerm_container_registry" "main" {
+  name                = "acrburstops${random_string.suffix.result}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  sku                 = "Basic"
+  admin_enabled       = true
+  tags                = local.common_tags
+}
+
+# --- Azure Kubernetes Service (AKS) -----------------------------------------
+resource "azurerm_kubernetes_cluster" "main" {
+  name                = "aks-burstops-${random_string.suffix.result}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  dns_prefix          = "aks-burstops-${random_string.suffix.result}"
+  sku_tier            = "Free"
+
+  default_node_pool {
+    name                 = "system"
+    node_count           = var.node_count
+    vm_size              = var.node_vm_size
+    os_disk_size_gb      = 32
+    auto_scaling_enabled = false
+  }
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  network_profile {
+    network_plugin    = "kubenet"
+    load_balancer_sku = "standard"
+  }
+
+  oms_agent {
+    log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+  }
+
+  tags = local.common_tags
+}
+
+resource "azurerm_role_assignment" "aks_acr_pull" {
+  principal_id                     = azurerm_kubernetes_cluster.main.kubelet_identity[0].object_id
+  role_definition_name             = "AcrPull"
+  scope                            = azurerm_container_registry.main.id
+  skip_service_principal_aad_check = true
+}
+
+data "azurerm_client_config" "current" {}
+
+# --- Azure Key Vault --------------------------------------------------------
+resource "azurerm_key_vault" "main" {
+  name                        = "kv-burstops-${random_string.suffix.result}"
+  location                    = azurerm_resource_group.main.location
+  resource_group_name         = azurerm_resource_group.main.name
+  tenant_id                   = data.azurerm_client_config.current.tenant_id
+  sku_name                    = "standard"
+  soft_delete_retention_days  = 90
+  purge_protection_enabled    = false
+  rbac_authorization_enabled  = false
+  tags                        = local.common_tags
+}
+
+resource "azurerm_key_vault_secret" "gateway_hmac_secret" {
+  name         = "gateway-hmac-secret"
+  value        = random_password.gateway_hmac_secret.result
+  key_vault_id = azurerm_key_vault.main.id
+}
+
+# --- Azure Managed Grafana (PaaS) -------------------------------------------
+resource "azurerm_dashboard_grafana" "main" {
+  name                              = "amg-burstops-${random_string.suffix.result}"
+  resource_group_name               = azurerm_resource_group.main.name
+  location                          = azurerm_resource_group.main.location
+  grafana_major_version             = 12
+  api_key_enabled                   = true
+  deterministic_outbound_ip_enabled = false
+  public_network_access_enabled     = true
+  sku                               = "Standard"
+  tags                              = local.common_tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+}
+
+# --- Azure Monitor Alerts & Action Group ------------------------------------
+resource "azurerm_monitor_action_group" "alerts" {
+  name                = "ag-burstops-alerts"
+  resource_group_name = azurerm_resource_group.main.name
+  short_name          = "burstops"
+  tags                = local.common_tags
+
+  email_receiver {
+    name          = "Dhruva"
+    email_address = "gorkaldhruva@gmail.com"
+  }
+}
+
+resource "azurerm_monitor_metric_alert" "aks_high_cpu" {
+  name                = "alert-aks-high-cpu"
+  resource_group_name = azurerm_resource_group.main.name
+  scopes              = [azurerm_kubernetes_cluster.main.id]
+  description         = "AKS Node CPU exceeded 80 percent - BurstOps burst threshold"
+  severity            = 2
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+  tags                = local.common_tags
+
+  criteria {
+    metric_namespace = "Microsoft.ContainerService/managedClusters"
+    metric_name      = "node_cpu_usage_percentage"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.alerts.id
+  }
+}
+
+resource "azurerm_monitor_metric_alert" "serverless_deflection" {
+  name                = "alert-serverless-deflection"
+  resource_group_name = azurerm_resource_group.main.name
+  scopes              = [azurerm_function_app_flex_consumption.main.id]
+  description         = "BurstOps serverless deflection triggered to Azure Function"
+  severity            = 3
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+  tags                = local.common_tags
+
+  criteria {
+    metric_namespace = "Microsoft.Web/sites"
+    metric_name      = "OnDemandFunctionExecutionCount"
+    aggregation      = "Total"
+    operator         = "GreaterThan"
+    threshold        = 0
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.alerts.id
+  }
+}
+
