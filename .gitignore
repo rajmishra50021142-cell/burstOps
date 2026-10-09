@@ -18,3 +18,5 @@ k8s/gateway-secret.yaml
 scratch/
 tfplan
 *.zip
+**/node_modules/
+frontend/dist/

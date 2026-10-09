@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: burstops-demo-service
+    runtime: python
+    buildCommand: "pip install -r requirements-demo.txt && cd frontend && npm install && npm run build && cd .."
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: DEMO_MODE
+        value: cloud
+      - key: GATEWAY_BASE_URL
+        value: http://burstops-cloud-ga3cvf.centralindia.cloudapp.azure.com
+      - key: LOCUST_INGRESS_URL
+        value: http://burstops-cloud-ga3cvf.centralindia.cloudapp.azure.com/locust
+      - key: GRAFANA_URL
+        value: http://burstops-cloud-ga3cvf.centralindia.cloudapp.azure.com/grafana/
+      - key: PROMETHEUS_URL
+        value: http://burstops-cloud-ga3cvf.centralindia.cloudapp.azure.com/metrics
+      - key: AZURE_SUBSCRIPTION_ID
+        value: 980e5d74-260c-49bc-ba07-2343e710859d
+      - key: AZURE_RESOURCE_GROUP
+        value: rg-burstops-prod
+      - key: AZURE_AKS_CLUSTER
+        value: aks-burstops-ga3cvf
+      - key: AZURE_FUNCTION_APP
+        value: func-burstops-cloud-ga3cvf
+      - key: AZURE_APP_INSIGHTS
+        value: log-burstops-ga3cvf
+      - key: MAX_RUN_DURATION_SECONDS
+        value: "120"
+      - key: RECOVERY_TIMEOUT_SECONDS
+        value: "60"
+      - key: COOLDOWN_SECONDS
+        value: "5"
+      - key: CONCURRENT_HTTP_WORKERS
+        value: "8"
