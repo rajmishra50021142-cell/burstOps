@@ -27,6 +27,8 @@ export interface CalculationCanary {
   prime_count: number;
   prime_sum: number;
   cold_start?: boolean | null;
+  duration_ms?: number;
+  timestamp?: number;
 }
 
 export interface OrderedLink {
@@ -62,4 +64,78 @@ export interface DemoStatusResponse {
   last_completed_run?: RunDetail | null;
   links_heading: string;
   ordered_links: OrderedLink[];
+}
+
+export interface GatewayHealth {
+  status: string;
+  mode?: string;
+  routing_mode?: number;
+  cpu_observed_percent?: number;
+  deflect_ratio?: number;
+  is_leader?: boolean;
+  redis_up?: boolean;
+  timestamp?: number;
+}
+
+export interface ParsedGatewayMetrics {
+  routingMode: number; // 0 = baseline, 1 = burst
+  cpuObservedPercent: number;
+  cpuSetpointPercent: number;
+  deflectRatio: number;
+  requestsRoutedK8s: number;
+  requestsRoutedServerless: number;
+  upstreamLatencySeconds: number;
+  transitionsBurstStart: number;
+  transitionsRecoverBaseline: number;
+  breakevenOverflowRps: number;
+  costPerRequestK8sUsd: number;
+  costPerRequestServerlessUsd: number;
+  hpaLagCostUsdTotal: number;
+  isLeader: boolean;
+  redisUp: boolean;
+  timestamp: number;
+}
+
+export interface MetricHistoryPoint {
+  timestamp: number;
+  timeLabel: string;
+  cpuPercent: number;
+  deflectRatio: number;
+  k8sRps: number;
+  serverlessRps: number;
+  totalRps: number;
+  latencyMs: number;
+  routingMode: number;
+}
+
+export type PortalBlade =
+  | 'home'
+  | 'gateway'
+  | 'metrics'
+  | 'cost'
+  | 'load-test'
+  | 'activity-log'
+  | 'service-health'
+  | 'all-resources';
+
+export type GatewaySubTab = 'overview' | 'monitoring' | 'properties' | 'capabilities';
+
+export interface PortalNotification {
+  id: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  message: string;
+  timestamp: number;
+  read?: boolean;
+}
+
+export interface ActivityLogItem {
+  id: string;
+  timestamp: string;
+  operationName: string;
+  status: 'Succeeded' | 'In Progress' | 'Failed' | 'Warning';
+  initiatedBy: string;
+  resource: string;
+  cpuPercent?: number;
+  details: string;
 }
