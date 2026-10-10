@@ -1,5 +1,9 @@
 # BurstOps — a burst-traffic gateway that buys HPA time
 
+> 📚 **Complete Documentation Guides**:
+> - 🏛️ **[Project Architecture & Azure Cloud Reference Manual](file:///Users/rajmishara/burstOps/README_PROJECT_AND_AZURE_ARCHITECTURE.md)** — Complete system architecture, research paper citation, BurstOps Portal walkthrough, Azure Functions deep dive, Azure resources master inventory, and operational CLI commands (`az`, `kubectl`, `terraform`).
+> - 🐳 **[Codebase Architecture, Docker Containers & Run Guide](file:///Users/rajmishara/burstOps/README_CODEBASE_AND_CONTAINERS.md)** — Container breakdown, local vs. cloud parity, file-by-file codebase tour, and local execution & testing instructions.
+
 BurstOps is a **Layer-7 traffic gateway** that compensates for Kubernetes
 Horizontal Pod Autoscaler (HPA) provisioning lag. HPA needs 30–90+ seconds to
 notice a CPU spike, provision pods, and make them ready. BurstOps watches
