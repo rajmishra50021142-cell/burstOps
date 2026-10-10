@@ -4,10 +4,8 @@ import {
   Flame,
   RotateCcw,
   ExternalLink,
-  MessageSquare,
   Loader2,
-  Share2,
-  Check,
+  LayoutDashboard,
 } from 'lucide-react';
 import { DemoStatusResponse } from '../types';
 
@@ -18,7 +16,6 @@ interface AzureCommandBarProps {
   onTriggerRecover: () => Promise<void>;
   isActionLoading: boolean;
   demoStatus: DemoStatusResponse | null;
-  onShowFeedbackToast?: () => void;
 }
 
 export const AzureCommandBar: React.FC<AzureCommandBarProps> = ({
@@ -28,27 +25,24 @@ export const AzureCommandBar: React.FC<AzureCommandBarProps> = ({
   onTriggerRecover,
   isActionLoading,
   demoStatus,
-  onShowFeedbackToast,
 }) => {
   const canBurst = Boolean(demoStatus?.can_burst && !isActionLoading);
   const canRecover = Boolean(demoStatus?.can_recover && !isActionLoading);
 
-  // Grab ordered links if available
-  const grafanaLink = demoStatus?.ordered_links?.find((l) => l.number === 2)?.url || 'http://localhost:3000';
-  const prometheusLink = demoStatus?.ordered_links?.find((l) => l.number === 3)?.url || 'http://localhost:9090';
-  const jaegerLink = 'http://localhost:16686';
-  const locustLink = 'http://localhost:8089';
+  // Grab active Grafana link (from cloud demo response or fallback to azure ingress)
+  const grafanaLink =
+    demoStatus?.ordered_links?.find((l) => l.number === 2)?.url ||
+    'http://burstops-cloud-ga3cvf.centralindia.cloudapp.azure.com/grafana/';
 
   return (
-    <div className="bg-[#FAF9F8] dark:bg-[#11100F] border-b border-[#EDEBE9] dark:border-[#292827] px-4 sm:px-6 py-1.5 flex items-center justify-between overflow-x-auto select-none">
-      {/* Left command buttons */}
-      <div className="flex items-center gap-1 shrink-0">
+    <div className="bg-[#FAF9F8] dark:bg-[#11100F] border-b border-[#EDEBE9] dark:border-[#292827] px-4 sm:px-6 py-1.5 flex items-center justify-between select-none">
+      <div className="flex items-center gap-1 shrink-0 flex-wrap">
         {/* Refresh */}
         <button
           onClick={onRefresh}
           disabled={isRefreshing}
           className="azure-btn-command text-[#323130] dark:text-[#F3F2F1]"
-          title="Refresh current blade data (every 2s auto-polls)"
+          title="Refresh current data"
         >
           <RefreshCw className={`w-3.5 h-3.5 text-azure-500 ${isRefreshing ? 'animate-spin' : ''}`} />
           <span>Refresh</span>
@@ -98,62 +92,18 @@ export const AzureCommandBar: React.FC<AzureCommandBarProps> = ({
         {/* Separator */}
         <div className="w-[1px] h-4 bg-[#EDEBE9] dark:bg-[#292827] mx-1" />
 
-        {/* External Telemetry Tools */}
+        {/* Grafana Deep Link (Verified working) */}
         <a
           href={grafanaLink}
           target="_blank"
           rel="noopener noreferrer"
-          className="azure-btn-command text-[#323130] dark:text-[#F3F2F1]"
-          title="Open Grafana Dashboard (Port 3000)"
+          className="azure-btn-command text-[#323130] dark:text-[#F3F2F1] hover:text-amber-600"
+          title="Open Grafana Dashboard on Azure"
         >
-          <ExternalLink className="w-3.5 h-3.5 text-amber-500" />
-          <span>Grafana</span>
+          <LayoutDashboard className="w-3.5 h-3.5 text-amber-500" />
+          <span>Grafana Dashboard</span>
+          <ExternalLink className="w-3 h-3 text-slate-400 ml-0.5" />
         </a>
-
-        <a
-          href={jaegerLink}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="azure-btn-command text-[#323130] dark:text-[#F3F2F1]"
-          title="Open Jaeger Distributed Tracing (Port 16686)"
-        >
-          <ExternalLink className="w-3.5 h-3.5 text-purple-500" />
-          <span>Jaeger</span>
-        </a>
-
-        <a
-          href={locustLink}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="azure-btn-command text-[#323130] dark:text-[#F3F2F1]"
-          title="Open Locust Load Testing Web UI (Port 8089)"
-        >
-          <ExternalLink className="w-3.5 h-3.5 text-emerald-500" />
-          <span>Locust</span>
-        </a>
-
-        <a
-          href={prometheusLink}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="azure-btn-command text-[#323130] dark:text-[#F3F2F1]"
-          title="Open Prometheus Scraper & PromQL (Port 9090)"
-        >
-          <ExternalLink className="w-3.5 h-3.5 text-orange-500" />
-          <span>Prometheus</span>
-        </a>
-      </div>
-
-      {/* Right command buttons */}
-      <div className="flex items-center gap-1 shrink-0">
-        <button
-          onClick={onShowFeedbackToast}
-          className="azure-btn-command text-[#605E5C] dark:text-[#A19F9D]"
-          title="Give feedback on BurstOps Portal"
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Feedback</span>
-        </button>
       </div>
     </div>
   );

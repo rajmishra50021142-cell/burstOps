@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRight, Home, Layers, Cpu, BarChart3, DollarSign, Flame, FileText, HeartPulse } from 'lucide-react';
+import { ChevronRight, Home, Cpu, Flame } from 'lucide-react';
 import { PortalBlade } from '../types';
 
 interface AzureBreadcrumbProps {
@@ -17,88 +17,33 @@ export const AzureBreadcrumb: React.FC<AzureBreadcrumbProps> = ({
 }) => {
   const getBladeMeta = () => {
     switch (activeBlade) {
+      case 'gateway':
+        return {
+          title: 'Gateway',
+          subtitle: 'Layer-7 Elastic Ingress Gateway (2 Replicas, Central India)',
+          icon: Cpu,
+          breadcrumbs: [
+            { label: 'Home', blade: 'home' as PortalBlade },
+            { label: 'Gateway', blade: 'gateway' as PortalBlade },
+          ],
+        };
+      case 'load-test':
+        return {
+          title: 'Load Test & Simulator',
+          subtitle: 'Interactive load injection, mathematical canaries, and live verification',
+          icon: Flame,
+          breadcrumbs: [
+            { label: 'Home', blade: 'home' as PortalBlade },
+            { label: 'Load Test & Simulator', blade: 'load-test' as PortalBlade },
+          ],
+        };
       case 'home':
+      default:
         return {
           title: 'Home',
           subtitle: 'Welcome to BurstOps Portal on Microsoft Azure',
           icon: Home,
           breadcrumbs: [{ label: 'Home', blade: 'home' as PortalBlade }],
-        };
-      case 'gateway':
-        return {
-          title: 'burstops-gateway',
-          subtitle: 'Layer-7 Elastic Ingress Gateway (2 Replicas, Central India)',
-          icon: Cpu,
-          breadcrumbs: [
-            { label: 'Home', blade: 'home' as PortalBlade },
-            { label: 'All resources', blade: 'all-resources' as PortalBlade },
-            { label: 'burstops-gateway', blade: 'gateway' as PortalBlade },
-          ],
-        };
-      case 'metrics':
-        return {
-          title: 'Metrics | Azure Monitor',
-          subtitle: 'Real-time telemetry, deflection ratio, and hysteresis thresholds',
-          icon: BarChart3,
-          breadcrumbs: [
-            { label: 'Home', blade: 'home' as PortalBlade },
-            { label: 'Monitor', blade: 'metrics' as PortalBlade },
-            { label: 'Metrics', blade: 'metrics' as PortalBlade },
-          ],
-        };
-      case 'cost':
-        return {
-          title: 'Cost analysis | FinOps',
-          subtitle: 'Continuous baseline vs serverless deflection economics',
-          icon: DollarSign,
-          breadcrumbs: [
-            { label: 'Home', blade: 'home' as PortalBlade },
-            { label: 'Cost Management + Billing', blade: 'cost' as PortalBlade },
-            { label: 'Cost analysis', blade: 'cost' as PortalBlade },
-          ],
-        };
-      case 'load-test':
-        return {
-          title: 'Load Test & Traffic Simulator',
-          subtitle: 'Interactive load injection, mathematical canaries, and live logs',
-          icon: Flame,
-          breadcrumbs: [
-            { label: 'Home', blade: 'home' as PortalBlade },
-            { label: 'Test Plans', blade: 'load-test' as PortalBlade },
-            { label: 'Load Test Controller', blade: 'load-test' as PortalBlade },
-          ],
-        };
-      case 'activity-log':
-        return {
-          title: 'Activity log',
-          subtitle: 'Subscription-level events, mode transitions, and state history',
-          icon: FileText,
-          breadcrumbs: [
-            { label: 'Home', blade: 'home' as PortalBlade },
-            { label: 'Monitor', blade: 'metrics' as PortalBlade },
-            { label: 'Activity log', blade: 'activity-log' as PortalBlade },
-          ],
-        };
-      case 'service-health':
-        return {
-          title: 'Service Health',
-          subtitle: 'Resource health matrix across Kubernetes, Functions, and Redis',
-          icon: HeartPulse,
-          breadcrumbs: [
-            { label: 'Home', blade: 'home' as PortalBlade },
-            { label: 'Service Health', blade: 'service-health' as PortalBlade },
-          ],
-        };
-      case 'all-resources':
-      default:
-        return {
-          title: 'All resources',
-          subtitle: 'BurstOps Cloud Resource Group (Central India)',
-          icon: Layers,
-          breadcrumbs: [
-            { label: 'Home', blade: 'home' as PortalBlade },
-            { label: 'All resources', blade: 'all-resources' as PortalBlade },
-          ],
         };
     }
   };
@@ -107,11 +52,11 @@ export const AzureBreadcrumb: React.FC<AzureBreadcrumbProps> = ({
   const IconComponent = meta.icon;
 
   if (activeBlade === 'home') {
-    return null; // Azure portal home page doesn't show standard breadcrumbs
+    return null;
   }
 
   return (
-    <div className="bg-white dark:bg-[#1B1A19] border-b border-[#EDEBE9] dark:border-[#292827] px-4 sm:px-6 py-2.5">
+    <div className="bg-white dark:bg-[#1B1A19] border-b border-[#EDEBE9] dark:border-[#292827] px-4 sm:px-6 py-2.5 select-none">
       {/* Breadcrumb Path */}
       <nav className="flex items-center gap-1.5 text-xs text-[#605E5C] dark:text-[#A19F9D] mb-1.5">
         {meta.breadcrumbs.map((crumb, idx) => {
@@ -156,10 +101,11 @@ export const AzureBreadcrumb: React.FC<AzureBreadcrumbProps> = ({
         {activeBlade === 'gateway' && (
           <div className="flex items-center gap-2 self-start sm:self-auto text-xs">
             <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-slate-100 dark:bg-[#252423] border border-[#EDEBE9] dark:border-[#323130] font-medium">
-              <span className={`w-2 h-2 rounded-full ${
-                !isOnline ? 'bg-rose-500' :
-                routingMode === 1 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'
-              }`} />
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  !isOnline ? 'bg-rose-500' : routingMode === 1 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'
+                }`}
+              />
               <span className="text-[#323130] dark:text-white">
                 {!isOnline ? 'Offline' : routingMode === 1 ? 'Burst Active (PI Control)' : 'Baseline Steady'}
               </span>

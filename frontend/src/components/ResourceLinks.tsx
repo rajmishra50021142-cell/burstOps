@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExternalLink, LayoutDashboard, Compass, Layers, BarChart3, Cloud, Server, Sparkles } from 'lucide-react';
+import { ExternalLink, LayoutDashboard, Compass, Layers, BarChart3, Cloud, Server } from 'lucide-react';
 import { OrderedLink } from '../types';
 
 interface ResourceLinksProps {
@@ -11,51 +11,53 @@ export const ResourceLinks: React.FC<ResourceLinksProps> = ({ heading, links }) 
   const getIconForLink = (number: number) => {
     switch (number) {
       case 1:
-        return <Layers className="w-4 h-4 text-cyan-400" />;
+        return <Layers className="w-4 h-4 text-azure-500" />;
       case 2:
-        return <LayoutDashboard className="w-4 h-4 text-amber-400" />;
+        return <LayoutDashboard className="w-4 h-4 text-amber-500" />;
       case 3:
-        return <BarChart3 className="w-4 h-4 text-purple-400" />;
+        return <BarChart3 className="w-4 h-4 text-purple-500" />;
       case 4:
       case 5:
-        return <Server className="w-4 h-4 text-emerald-400" />;
+        return <Server className="w-4 h-4 text-emerald-500" />;
       case 6:
       case 7:
-        return <Cloud className="w-4 h-4 text-sky-400" />;
+        return <Cloud className="w-4 h-4 text-sky-500" />;
       default:
-        return <Compass className="w-4 h-4 text-blue-400" />;
+        return <Compass className="w-4 h-4 text-azure-500" />;
     }
   };
 
+  const grafanaItem = links.find((l) => l.number === 2);
+
   return (
-    <div className="bg-slate-900/80 rounded-xl border border-slate-800 p-6 shadow-xl space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+    <div className="azure-card bg-white dark:bg-[#1B1A19] border border-[#EDEBE9] dark:border-[#292827] rounded-sm p-5 shadow-xs space-y-4 select-none">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#EDEBE9] dark:border-[#292827]">
         <div>
-          <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <Compass className="w-5 h-5 text-cyan-400" />
+          <h2 className="text-sm sm:text-base font-semibold text-[#323130] dark:text-white flex items-center gap-2">
+            <Compass className="w-4 h-4 text-azure-500" />
             {heading}
           </h2>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-xs text-[#605E5C] dark:text-[#A19F9D] mt-0.5">
             Direct deep-links to examine real cloud telemetry and infrastructure state on Azure.
           </p>
         </div>
 
         {/* Featured Grafana Quick Jump Button */}
-        {links.find((l) => l.number === 2) && (
+        {grafanaItem && (
           <a
-            href={links.find((l) => l.number === 2)?.url}
+            href={grafanaItem.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-gradient-to-r from-amber-500/20 to-orange-500/20 hover:from-amber-500/30 hover:to-orange-500/30 border border-amber-500/40 text-amber-300 font-medium text-xs shadow-md transition-all self-start sm:self-auto hover:scale-[1.02]"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-950 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 font-semibold text-xs shadow-xs transition-all self-start sm:self-auto"
           >
-            <LayoutDashboard className="w-4 h-4 text-amber-400" />
+            <LayoutDashboard className="w-3.5 h-3.5 text-amber-600" />
             <span>Open Grafana Dashboard</span>
-            <ExternalLink className="w-3.5 h-3.5 ml-1 opacity-70" />
+            <ExternalLink className="w-3 h-3 ml-0.5 opacity-70" />
           </a>
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {links.map((link) => {
           const isGrafana = link.number === 2;
           return (
@@ -64,36 +66,36 @@ export const ResourceLinks: React.FC<ResourceLinksProps> = ({ heading, links }) 
               href={link.url}
               target="_blank"
               rel="noopener noreferrer"
-              className={`group flex items-start gap-3 p-3.5 rounded-lg border transition-all duration-150 ${
+              className={`group flex items-start gap-3 p-3.5 rounded-sm border transition-all ${
                 isGrafana
-                  ? 'bg-amber-950/20 border-amber-500/30 hover:border-amber-400/60 hover:bg-amber-950/30'
-                  : 'bg-slate-850/70 border-slate-750 hover:border-blue-500/40 hover:bg-slate-800'
+                  ? 'bg-amber-50/30 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/60 hover:border-amber-400'
+                  : 'bg-[#FAF9F8] dark:bg-[#11100F] border-[#EDEBE9] dark:border-[#292827] hover:border-azure-400'
               }`}
             >
               <div
-                className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 text-xs font-bold font-mono border ${
+                className={`w-6 h-6 rounded-sm flex items-center justify-center shrink-0 text-xs font-bold font-mono border ${
                   isGrafana
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                    : 'bg-slate-800 text-slate-300 border-slate-700 group-hover:border-blue-500/40 group-hover:text-blue-300'
+                    ? 'bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700'
+                    : 'bg-white dark:bg-black/30 text-azure-600 dark:text-azure-400 border-[#EDEBE9] dark:border-[#292827]'
                 }`}
               >
                 {link.number}
               </div>
 
-              <div className="flex-1 min-w-0 space-y-0.5">
+              <div className="flex-1 min-w-0 space-y-1">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="font-semibold text-xs text-white group-hover:text-cyan-300 transition-colors truncate flex items-center gap-1.5">
+                  <div className="font-semibold text-xs text-[#323130] dark:text-white group-hover:text-azure-600 dark:group-hover:text-azure-400 transition-colors truncate flex items-center gap-1.5">
                     {getIconForLink(link.number)}
                     <span>{link.title}</span>
                     {isGrafana && (
-                      <span className="text-[10px] font-sans font-semibold px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      <span className="text-[10px] font-semibold px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
                         Primary Telemetry
                       </span>
                     )}
                   </div>
-                  <ExternalLink className="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400 shrink-0 transition-colors" />
+                  <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-azure-500 shrink-0 transition-colors" />
                 </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
+                <p className="text-[11px] text-[#605E5C] dark:text-[#A19F9D] leading-relaxed">
                   {link.description}
                 </p>
                 <div className="text-[10px] font-mono text-slate-400 truncate pt-0.5">
