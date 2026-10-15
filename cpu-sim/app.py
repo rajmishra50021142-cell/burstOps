@@ -6,12 +6,8 @@ aggregate /, /docker and /restricted metrics — never the per-container
 publishes container_cpu_usage_seconds_total in exactly that shape, with
 control endpoints to ramp the simulated load up and down.
 
-Metric math (the contract): the gateway runs
-    avg(rate(container_cpu_usage_seconds_total{namespace="burstops"}[30s])) * 100
-Every series must accrue (target_pct / 100) core-seconds per wall-clock
-second; since avg ignores series count, all REPLICAS series accrue at the
-same full rate. Counter only ever inc()s — a lower target means a slower
-rate of increase, never a decrease.
+Supports automatic slot-driven load tracking: each active Digital Twin slot
+adds ~10% CPU load, while retaining full manual override compatibility.
 """
 import asyncio
 import os
@@ -30,9 +26,6 @@ REPLICAS = int(os.environ.get("REPLICAS", "2"))
 NAMESPACE_LABEL = os.environ.get("NAMESPACE_LABEL", "burstops")
 PORT = int(os.environ.get("PORT", "8002"))
 
-# prometheus_client appends _total to counters and would double the suffix if
-# we declared "container_cpu_usage_seconds_total". Declaring the bare name
-# exposes exactly container_cpu_usage_seconds_total.
 registry = CollectorRegistry()
 cpu_usage = Counter(
     "container_cpu_usage_seconds",
@@ -41,8 +34,6 @@ cpu_usage = Counter(
     registry=registry,
 )
 
-# Docker's container names that prometheus.yml's relabel rules stamp
-# namespace="burstops" onto; mirror them so the data looks like cAdvisor's.
 CONTAINER_NAMES = [f"burstops-backend-{i}" for i in range(1, REPLICAS + 1)]
 
 app = FastAPI(title="burstops cpu-sim")
@@ -50,15 +41,12 @@ app = FastAPI(title="burstops cpu-sim")
 _target_pct = INITIAL_CPU_PCT
 _current_pct = INITIAL_CPU_PCT
 _started_at = time.time()
+_active_slots = 0
+_manual_override = False
 
 
 async def accrual_loop():
-    """Glide current_pct toward target_pct at a bounded rate, then accrue.
-
-    Uses measured dt rather than the nominal TICK_SECONDS: under load the
-    loop drifts, and accruing nominal 0.5s while 0.9s passed makes rate()
-    under-report and the burst threshold unreachable.
-    """
+    """Glide current_pct toward target_pct at a bounded rate, then accrue."""
     global _current_pct
     last = time.monotonic()
     while True:
@@ -93,12 +81,36 @@ async def metrics():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "current_pct": _current_pct,
+        "active_slots": _active_slots,
+        "manual_override": _manual_override,
+    }
+
+
+@app.post("/active-slots")
+async def report_active_slots(active: int = Query(..., ge=0, le=100)):
+    """Automatic Digital Twin compute slot tracking.
+
+    Each active compute slot proportionally adds ~10% CPU load unless manual override is active.
+    """
+    global _active_slots, _target_pct
+    _active_slots = active
+    if not _manual_override:
+        _target_pct = min(100.0, INITIAL_CPU_PCT + (_active_slots * 10.0))
+    return {
+        "active_slots": _active_slots,
+        "target_pct": _target_pct,
+        "current_pct": _current_pct,
+        "manual_override": _manual_override,
+    }
 
 
 @app.post("/ramp-up")
 async def ramp_up(target: float | None = Query(default=None), seconds: float | None = Query(default=None)):
-    global _target_pct, RAMP_SECONDS
+    global _target_pct, RAMP_SECONDS, _manual_override
+    _manual_override = True
     if target is not None:
         _target_pct = target
     else:
@@ -110,7 +122,8 @@ async def ramp_up(target: float | None = Query(default=None), seconds: float | N
 
 @app.post("/ramp-down")
 async def ramp_down(target: float | None = Query(default=None), seconds: float | None = Query(default=None)):
-    global _target_pct, RAMP_SECONDS
+    global _target_pct, RAMP_SECONDS, _manual_override
+    _manual_override = False
     if target is not None:
         _target_pct = target
     else:
@@ -122,12 +135,18 @@ async def ramp_down(target: float | None = Query(default=None), seconds: float |
 
 @app.post("/set")
 async def set_pct(pct: float = Query(...)):
-    """Arbitrary target, clamped to 0..400 — multi-core saturation (e.g. 250
-    = 2.5 cores) is a legitimate scenario and the gateway's threshold logic
-    should handle it."""
-    global _target_pct
+    global _target_pct, _manual_override
+    _manual_override = True
     _target_pct = min(max(pct, 0.0), 400.0)
     return {"target_pct": _target_pct, "current_pct": _current_pct}
+
+
+@app.post("/reset-override")
+async def reset_override():
+    global _manual_override, _target_pct
+    _manual_override = False
+    _target_pct = min(100.0, INITIAL_CPU_PCT + (_active_slots * 10.0))
+    return {"status": "override_cleared", "target_pct": _target_pct}
 
 
 @app.get("/state")
@@ -144,6 +163,8 @@ async def state():
         {
             "target_pct": _target_pct,
             "current_pct": _current_pct,
+            "active_slots": _active_slots,
+            "manual_override": _manual_override,
             "replicas": REPLICAS,
             "ramp_seconds": RAMP_SECONDS,
             "cumulative_core_seconds": cumulative,

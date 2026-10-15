@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY gateway.py gateway_entrypoint.py costing.py tracing.py redis_backplane.py ./
+COPY gateway.py gateway_entrypoint.py golden_trio.py costing.py tracing.py redis_backplane.py ./
 
 EXPOSE 8080
 

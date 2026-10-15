@@ -16,7 +16,7 @@ export const AzureSidebar: React.FC<AzureSidebarProps> = ({
   const items = [
     { blade: 'home' as PortalBlade, label: 'Home', icon: Home },
     { blade: 'gateway' as PortalBlade, label: 'Gateway', icon: Cpu },
-    { blade: 'load-test' as PortalBlade, label: 'Load Test & Simulator', icon: Flame },
+    { blade: 'load-test' as PortalBlade, label: 'Digital Twin & Simulator', icon: Flame },
   ];
 
   return (

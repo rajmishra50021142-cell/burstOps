@@ -139,3 +139,85 @@ export interface ActivityLogItem {
   cpuPercent?: number;
   details: string;
 }
+
+export type DigitalTwinSubsystem =
+  | 'MONTE_CARLO_RUL'
+  | 'ROTOR_FFT_HARMONICS'
+  | 'THERMAL_STATE_CHECK';
+
+export interface DigitalTwinTaskPayload {
+  twin_id: string;
+  subsystem: DigitalTwinSubsystem;
+  rpm: number;
+  temperature_c: number;
+  vibration_amplitude: number;
+  monte_carlo_iterations: number;
+  ambient_temp_c?: number;
+}
+
+export interface DigitalTwinPhysicsOutput {
+  failure_probability?: number;
+  mean_health_index?: number;
+  thermal_stress_index?: number;
+  peak_harmonic_hz?: number;
+  peak_magnitude?: number;
+  vibration_rms?: number;
+  stator_equilibrium_temp_c?: number;
+  cooling_efficiency_pct?: number;
+  verification_hash: string;
+}
+
+export interface DigitalTwinExecutionResult {
+  id: string;
+  timestamp: number;
+  twin_id: string;
+  subsystem: DigitalTwinSubsystem;
+  executed_by: 'AKS_BASE_POD' | 'AZURE_SERVERLESS_FUNCTION' | string;
+  source: string;
+  impl: string;
+  node_hostname: string;
+  instance_id?: string;
+  process_pid?: number;
+  cpu_time_ms: number;
+  wall_time_ms: number;
+  physics_output: DigitalTwinPhysicsOutput;
+  gamma_ratio: number;
+  routing_reason: string;
+  dynamic_threshold_pct?: number;
+  load_velocity_pct_per_s?: number;
+  composite_utilization_pct?: number;
+  active_compute_slots?: number;
+  prewarm_state?: string;
+  cold_start?: boolean;
+}
+
+export interface GoldenTrioTelemetry {
+  capacity_model: {
+    aks_base_capacity_slots: number;
+    active_compute_slots: number;
+    slot_saturation_pct: number;
+    cpu_limit: string;
+    memory_limit: string;
+    composite_utilization_pct: number;
+    explanation: string;
+  };
+  novelty_1_aimd_threshold: {
+    current_threshold_theta: number;
+    current_threshold_pct: number;
+    aks_p95_latency_ms: number;
+    slo_target_p95_ms: number;
+    bounds: [number, number];
+    mode: string;
+  };
+  novelty_2_predictive_prewarm: {
+    load_velocity_pct_per_s: number;
+    prewarm_state: string;
+    prewarm_saves_count: number;
+    velocity_trigger_pct_per_s: number;
+    time_to_breach_trigger_s: number;
+  };
+  novelty_3_semantic_gamma: {
+    gamma_threshold: number;
+    subsystems: Record<string, { gamma: number; policy: string }>;
+  };
+}

@@ -29,8 +29,8 @@ export const AzureBreadcrumb: React.FC<AzureBreadcrumbProps> = ({
         };
       case 'load-test':
         return {
-          title: 'Load Test & Simulator',
-          subtitle: 'Interactive load injection, mathematical canaries, and live verification',
+          title: 'Digital Twin & Simulator',
+          subtitle: 'Real-user industrial wind turbine simulation, capacity slot saturation, and Golden Trio telemetry',
           icon: Flame,
           breadcrumbs: [
             { label: 'Home', blade: 'home' as PortalBlade },

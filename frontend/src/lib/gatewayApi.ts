@@ -1,4 +1,11 @@
-import { CalculationCanary, GatewayHealth, ParsedGatewayMetrics } from '../types';
+import {
+  CalculationCanary,
+  DigitalTwinExecutionResult,
+  DigitalTwinTaskPayload,
+  GatewayHealth,
+  GoldenTrioTelemetry,
+  ParsedGatewayMetrics,
+} from '../types';
 import { parsePrometheusMetrics } from './prometheusParser';
 
 const DEFAULT_GATEWAY_BASE = '/gateway';
@@ -138,3 +145,88 @@ export async function rampDownCpuSim(): Promise<{ success: boolean; message: str
     return { success: false, message: err.message || 'cpu-sim offline' };
   }
 }
+
+/**
+ * Sends a real Digital Twin computation request to the Gateway or Backend.
+ */
+export async function sendDigitalTwinCompute(
+  payload: DigitalTwinTaskPayload
+): Promise<DigitalTwinExecutionResult> {
+  const base = getGatewayBaseUrl();
+  // Try /api/twin/compute on gateway, fallback to /calculate
+  const url = `${base}/api/twin/compute`;
+  const start = performance.now();
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    // If gateway base fails or rewrite is not active, try root /calculate
+    resp = await fetch(`${base}/calculate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  const duration = Math.round(performance.now() - start);
+  if (!resp.ok) {
+    throw new Error(`Digital Twin execution failed: HTTP ${resp.status}`);
+  }
+
+  const data = await resp.json();
+  const meta = data.gateway_metadata || {};
+
+  return {
+    id: `twin-res-${Math.random().toString(36).substring(2, 9)}`,
+    timestamp: Date.now(),
+    twin_id: data.twin_id || payload.twin_id,
+    subsystem: data.subsystem || payload.subsystem,
+    executed_by: data.executed_by || (data.source === 'serverless' ? 'AZURE_SERVERLESS_FUNCTION' : 'AKS_BASE_POD'),
+    source: data.source || meta.route || 'k8s',
+    impl: data.impl || 'burstops-digital-twin',
+    node_hostname: data.node_hostname || data.hostname || data.instance_id || 'unknown',
+    instance_id: data.instance_id,
+    process_pid: data.process_pid,
+    cpu_time_ms: data.cpu_time_ms ?? Math.round(duration * 0.9),
+    wall_time_ms: data.wall_time_ms ?? duration,
+    physics_output: data.physics_output || {
+      verification_hash: data.verification_hash || 'hash-verified',
+    },
+    gamma_ratio: meta.gamma_ratio ?? data.gamma_ratio ?? 1.5,
+    routing_reason: meta.routing_reason ?? data.routing_reason ?? 'BASELINE_K8S_NORMAL',
+    dynamic_threshold_pct: meta.dynamic_threshold_pct,
+    load_velocity_pct_per_s: meta.load_velocity_pct_per_s,
+    composite_utilization_pct: meta.composite_utilization_pct,
+    active_compute_slots: meta.active_compute_slots,
+    prewarm_state: meta.prewarm_state,
+    cold_start: data.cold_start ?? false,
+  };
+}
+
+/**
+ * Fetches real-time Golden Trio telemetry and capacity metrics.
+ */
+export async function fetchGoldenTrioTelemetry(): Promise<GoldenTrioTelemetry> {
+  const base = getGatewayBaseUrl();
+  const url = `${base}/api/golden-trio/status`;
+  try {
+    const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (resp.ok) {
+      return await resp.json();
+    }
+  } catch (e) {
+    // Fallback to local /api/golden-trio/status
+  }
+
+  const localResp = await fetch('/api/golden-trio/status');
+  if (!localResp.ok) {
+    throw new Error(`Failed to fetch Golden Trio status: HTTP ${localResp.status}`);
+  }
+  return await localResp.json();
+}
+

@@ -1,13 +1,14 @@
 """BurstOps Azure Function — V2 Python programming model.
 
-Single file, decorator-based registration, no function.json anywhere (that
-is the V1 model and mixing them fails at load time).
-
+Single file, decorator-based registration, no function.json anywhere.
 Wire contract (must not drift from gateway.py's sign_request()):
   headers x-functions-key / x-gateway-timestamp / x-gateway-signature,
   signature = HMAC_SHA256(secret, f"{timestamp}:" + body).hexdigest().
-GET requests carry an empty body (b"") — the Locust profile is 95% GETs,
-so the empty-body case is the common path, not an edge case.
+
+Supports:
+- Novelty 2: Speculative Pre-Warming (X-BurstOps-Prewarm: true)
+- Digital Twin Physics Engine (MONTE_CARLO_RUL, ROTOR_FFT_HARMONICS, THERMAL_STATE_CHECK)
+- Legacy /calculate prime sieve backwards-compatibility
 """
 import json
 import logging
@@ -15,6 +16,7 @@ import os
 
 import azure.functions as func
 
+from digital_twin import execute_digital_twin_workload
 from hmac_util import DEFAULT_MAX_CLOCK_SKEW_SECONDS, SignatureError, verify_request
 
 logger = logging.getLogger("burstops.function")
@@ -29,8 +31,7 @@ _cold = {"started": False}
 
 
 def prime_sieve(limit: int) -> list[int]:
-    """Sieve of Eratosthenes over 2..limit — 2..1000 yields 168 primes summing to 76127,
-    the same real work dummy-backend performs so the serverless path is comparable."""
+    """Sieve of Eratosthenes over 2..limit — 2..1000 yields 168 primes summing to 76127."""
     is_prime = bytearray([1]) * (limit + 1)
     is_prime[0] = is_prime[1] = 0
     for i in range(2, int(limit**0.5) + 1):
@@ -41,11 +42,7 @@ def prime_sieve(limit: int) -> list[int]:
 
 @app.route(route="calculate", methods=[func.HttpMethod.GET, func.HttpMethod.POST])
 def calculate(req: func.HttpRequest) -> func.HttpResponse:
-    # The platform validates x-functions-key at AuthLevel.FUNCTION and
-    # returns 401 before this code runs — but the LOCAL func host does not
-    # enforce keys, so keep our own check: local testing must pass/fail the
-    # same requests the cloud would.
-    body = req.get_body() or b""  # b"" for GET — expected, sign those exact bytes
+    body = req.get_body() or b""
 
     try:
         verify_request(
@@ -58,7 +55,6 @@ def calculate(req: func.HttpRequest) -> func.HttpResponse:
             max_skew_seconds=MAX_CLOCK_SKEW,
         )
     except SignatureError as exc:
-        # never log the secret, the key, or a full signature
         logger.warning("rejected request: %s", exc.reason)
         return func.HttpResponse(
             body=json.dumps({"detail": exc.reason}),
@@ -66,15 +62,54 @@ def calculate(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
         )
 
-    # No artificial latency here — a real Function has real cold starts;
-    # fake delay would corrupt gateway_upstream_latency_seconds.
-    primes = prime_sieve(1000)
+    # Novelty 2: Speculative Pre-Warm Ping Handler
+    is_prewarm = (
+        req.headers.get("x-burstops-prewarm", "").lower() == "true"
+        or req.params.get("prewarm") == "true"
+    )
+    if is_prewarm:
+        _cold["started"] = True
+        return func.HttpResponse(
+            body=json.dumps(
+                {
+                    "status": "WARM_READY",
+                    "instance_id": os.environ.get("WEBSITE_INSTANCE_ID", "local")[:8],
+                    "prewarmed": True,
+                    "source": "serverless",
+                    "impl": "azure-function",
+                }
+            ),
+            status_code=200,
+            mimetype="application/json",
+        )
+
     cold_start = not _cold["started"]
     _cold["started"] = True
 
+    # Parse JSON body for Digital Twin payload
+    body_json = {}
+    if body:
+        try:
+            body_json = json.loads(body.decode("utf-8"))
+        except Exception:
+            body_json = {}
+
+    for k, v in req.params.items():
+        if k not in body_json:
+            body_json[k] = v
+
+    if "subsystem" in body_json or "twin_id" in body_json:
+        payload = execute_digital_twin_workload(body_json, "AZURE_SERVERLESS_FUNCTION")
+        payload["cold_start"] = cold_start
+        return func.HttpResponse(
+            body=json.dumps(payload), status_code=200, mimetype="application/json"
+        )
+
+    primes = prime_sieve(1000)
     payload = {
         "source": "serverless",
         "impl": "azure-function",
+        "executed_by": "AZURE_SERVERLESS_FUNCTION",
         "instance_id": os.environ.get("WEBSITE_INSTANCE_ID", "local")[:8],
         "prime_count": len(primes),
         "prime_sum": sum(primes),

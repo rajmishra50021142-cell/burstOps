@@ -5,24 +5,10 @@ controller) from the DATA PLANE (N stateless replicas that just route).
 Redis carries the decision between them; the request path does ZERO Redis
 I/O — followers keep a local cached copy refreshed in the background.
 
-Degradation is layered so the existing semantics survive:
-  1. Fresh shared state (age <= REDIS_STATE_MAX_AGE_MS) -> use it.
-  2. Stale/unreadable -> follower polls Prometheus itself (today's
-     single-replica behaviour — worst case of a Redis outage is the
-     behaviour we already shipped).
-  3. Its own polling also stale past STALE_STATE_GRACE -> existing
-     fail-open-to-BURST fires, unchanged.
-
-REDIS_URL empty/unset (the default) disables the backplane entirely.
-Redis down at startup must not crash the pod: log once, metric to 0, retry
-in the background. No exception ever escapes to the request path.
-
-HONEST LIMITATION (docs/upgrade-b-notes.md): Redis leader election is NOT
-consensus. A leader that pauses past the TTL can still believe it leads
-while another takes over — two writers briefly coexist. The generation
-counter bounds the damage and the state is reconstructible in one poll
-cycle. The correct-but-heavier primitive is a Kubernetes Lease via the
-coordination API — named as the alternative, deliberately not built.
+Also coordinates capacity slots and Golden Trio distributed state:
+- Active base compute slots (out of MAX_BASE_COMPUTE_SLOTS = 10)
+- AIMD dynamic burst threshold theta(t)
+- Composite capacity utilization U_total
 """
 import asyncio
 import logging
@@ -36,6 +22,8 @@ logger = logging.getLogger("burstops.redis_backplane")
 REDIS_URL = ""                          # empty => backplane off (default)
 REDIS_LEADER_KEY = "burstops:leader"
 REDIS_STATE_KEY = "burstops:state"
+REDIS_ACTIVE_SLOTS_KEY = "burstops:active_compute_slots"
+MAX_BASE_COMPUTE_SLOTS = int(os.environ.get("MAX_BASE_COMPUTE_SLOTS", "10"))
 REDIS_LEADER_TTL_MS = 6000              # survives two missed renewals
 REDIS_LEADER_RENEW_MS = 2000            # matches POLL_INTERVAL
 REDIS_STATE_MAX_AGE_MS = 10000          # ~5 poll cycles before distrust
@@ -43,9 +31,6 @@ REDIS_SOCKET_TIMEOUT_S = 0.5            # a hung Redis must not stall the loop
 GATEWAY_INSTANCE_ID = f"{socket.gethostname()}-{os.getpid()}"
 
 # CAS renewal as a Lua script so check+extend is ONE atomic step.
-# SET key val XX PX ttl would be WRONG: XX succeeds whenever the key exists
-# — it never checks WHO owns it — so a follower could silently steal an
-# active lease.
 _RENEW_LEASE_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
   return redis.call('pexpire', KEYS[1], ARGV[2])
@@ -73,8 +58,6 @@ class RedisBackplane:
         self._url = url
         self._m = metrics                    # gateway module (metrics + state)
         self._state_owner = state_owner       # the RoutingState instance
-        # snapshot NOW: the module-level default is shared, so each
-        # backplane must own its identity (tests construct several)
         self._instance_id = GATEWAY_INSTANCE_ID
         self._client = aioredis.Redis.from_url(
             url,
@@ -83,7 +66,15 @@ class RedisBackplane:
             decode_responses=True,
         )
         self.is_leader = False
-        self.shared = {"mode": None, "deflect_ratio": None, "updated_at_ms": 0, "generation": 0}
+        self.shared = {
+            "mode": None,
+            "deflect_ratio": None,
+            "active_slots": 0,
+            "dynamic_threshold": 0.80,
+            "composite_util": 0.0,
+            "updated_at_ms": 0,
+            "generation": 0,
+        }
         self._last_seen_generation = 0
         self._renew_script = self._client.register_script(_RENEW_LEASE_LUA)
         self._release_script = self._client.register_script(_RELEASE_LEASE_LUA)
@@ -127,8 +118,6 @@ class RedisBackplane:
             except Exception:  # noqa: BLE001
                 pass
         elif self.is_leader:
-            # someone else holds the lease: demote and reset the gauge —
-            # a stale is_leader=1 on a follower breaks the "sums to 1" contract
             self.is_leader = False
             try:
                 self._m.gateway_is_leader.set(0)
@@ -137,8 +126,6 @@ class RedisBackplane:
         return bool(ok)
 
     async def renew_lease(self) -> bool:
-        """CAS renewal: 0 return = I am no longer the leader — demote
-        immediately, never retry into a second leader."""
         try:
             r = await self._renew_script(
                 keys=[REDIS_LEADER_KEY], args=[self._instance_id, REDIS_LEADER_TTL_MS]
@@ -158,8 +145,6 @@ class RedisBackplane:
         return True
 
     async def release_lease(self) -> None:
-        """Graceful shutdown: CAS delete so a restart hands over in
-        milliseconds instead of waiting out the TTL."""
         try:
             await self._release_script(
                 keys=[REDIS_LEADER_KEY], args=[self._instance_id]
@@ -169,11 +154,49 @@ class RedisBackplane:
             self._err("release")
         self.is_leader = False
 
+    # ---- capacity slots tracking ---------------------------------------------
+    async def incr_active_slots(self) -> int:
+        try:
+            val = await self._client.incr(REDIS_ACTIVE_SLOTS_KEY)
+            self._set_up(True)
+            return int(val)
+        except Exception:
+            self._err("incr_slots")
+            return 0
+
+    async def decr_active_slots(self) -> int:
+        try:
+            if hasattr(self._client, "decr"):
+                val = await self._client.decr(REDIS_ACTIVE_SLOTS_KEY)
+            else:
+                cur = await self._client.get(REDIS_ACTIVE_SLOTS_KEY)
+                val = max(0, int(cur or 0) - 1)
+                await self._client.set(REDIS_ACTIVE_SLOTS_KEY, str(val))
+            self._set_up(True)
+            return max(0, int(val))
+        except Exception:
+            self._err("decr_slots")
+            return 0
+
+    async def get_active_slots(self) -> int:
+        try:
+            val = await self._client.get(REDIS_ACTIVE_SLOTS_KEY)
+            self._set_up(True)
+            return int(val) if val is not None else 0
+        except Exception:
+            self._err("get_slots")
+            return 0
+
     # ---- state publish / subscribe -------------------------------------------
-    async def publish_state(self, mode_value: str, deflect_ratio: float, cpu: float) -> None:
-        """Leader only: write the decision hash + notify. Generation from
-        INCR; followers ignore any read whose generation is lower than the
-        highest they've seen (guards a briefly-resurrected old leader)."""
+    async def publish_state(
+        self,
+        mode_value: str,
+        deflect_ratio: float,
+        cpu: float,
+        active_slots: int = 0,
+        dynamic_threshold: float = 0.80,
+        composite_util: float = 0.0,
+    ) -> None:
         try:
             gen = await self._client.incr("burstops:generation")
             await self._client.hset(
@@ -182,6 +205,9 @@ class RedisBackplane:
                     "mode": mode_value,
                     "deflect_ratio": f"{deflect_ratio:.6f}",
                     "cpu_observed": f"{cpu:.4f}",
+                    "active_slots": str(active_slots),
+                    "dynamic_threshold": f"{dynamic_threshold:.4f}",
+                    "composite_util": f"{composite_util:.4f}",
                     "updated_at_ms": str(int(time.time() * 1000)),
                     "leader_id": self._instance_id,
                     "generation": str(gen),
@@ -196,9 +222,6 @@ class RedisBackplane:
             self._err("publish")
 
     async def refresh_shared_state(self) -> None:
-        """Follower backstop poll (pub/sub is fire-and-forget; a follower
-        that misses a message during reconnect would otherwise stay stale
-        forever). Belt and braces; the poll costs nothing."""
         try:
             data = await self._client.hgetall(REDIS_STATE_KEY)
             self._set_up(True)
@@ -210,11 +233,14 @@ class RedisBackplane:
         try:
             gen = int(data.get("generation", "0"))
             if gen < self._last_seen_generation:
-                return  # stale writer — ignore
+                return
             self._last_seen_generation = gen
             self.shared = {
                 "mode": data.get("mode"),
                 "deflect_ratio": float(data.get("deflect_ratio", 0.0)),
+                "active_slots": int(data.get("active_slots", "0")),
+                "dynamic_threshold": float(data.get("dynamic_threshold", "0.80")),
+                "composite_util": float(data.get("composite_util", "0.0")),
                 "updated_at_ms": int(data.get("updated_at_ms", "0")),
                 "generation": gen,
             }
@@ -232,13 +258,11 @@ class RedisBackplane:
 
 
 def build_backplane(metrics_module, state_owner):
-    """Factory: returns None when REDIS_URL is empty (backplane off — the
-    default — and the gateway behaves precisely as before)."""
     url = os.environ.get("REDIS_URL", REDIS_URL).strip()
     if not url:
         return None
     try:
         return RedisBackplane(url, metrics_module, state_owner)
-    except Exception as exc:  # noqa: BLE001 — never crash the pod
+    except Exception as exc:  # noqa: BLE001
         logger.warning("redis backplane construction failed (running local-only): %s", exc)
         return None

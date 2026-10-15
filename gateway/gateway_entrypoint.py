@@ -77,6 +77,15 @@ try:
 except Exception as exc:  # noqa: BLE001 — a typo in env must not stop traffic
     log.warning("tracing setup failed, serving without it: %s", exc)
 
+# Golden Trio novel controllers: AIMD threshold, predictive pre-warm, semantic gamma routing
+try:
+    import golden_trio
+
+    golden_trio.install_golden_trio(gateway)
+    log.info("golden trio controllers installed")
+except Exception as exc:  # noqa: BLE001
+    log.warning("golden trio setup notice: %s", exc)
+
 if __name__ == "__main__":
     import uvicorn
 

@@ -1,13 +1,11 @@
 """dummy-serverless — local stand-in for an Azure Function.
 
 Validates x-functions-key / x-gateway-timestamp / x-gateway-signature exactly
-as gateway.py generates them, injects 50-150ms of artificial latency to
-simulate a cold-ish Azure Function, and does the same prime-sieve work as
-dummy-backend so the serverless path is comparable rather than a stub echo.
-
-Listens on 8001 (baked into FUNCTION_UPSTREAM — do not pick another port).
+as gateway.py generates them, supports speculative pre-warming (Novelty 2),
+and executes Digital Twin physics computations or the reference prime-sieve.
 """
 import asyncio
+import json
 import logging
 import os
 import random
@@ -16,6 +14,7 @@ import socket
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from digital_twin import execute_digital_twin_workload
 from hmac_util import DEFAULT_MAX_CLOCK_SKEW_SECONDS, SignatureError, verify_request
 
 logger = logging.getLogger("burstops.dummy_serverless")
@@ -49,13 +48,15 @@ def prime_sieve(limit: int) -> list[int]:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "warm": _cold["started"]}
 
 
 @app.api_route("/calculate", methods=["GET", "POST"])
+@app.api_route("/api/twin/compute", methods=["GET", "POST"])
 async def calculate(request: Request):
-    body = await request.body()  # b"" for GET — that is expected
+    body = await request.body()
     h = request.headers
+
     try:
         verify_request(
             secret=GATEWAY_HMAC_SECRET,
@@ -67,20 +68,61 @@ async def calculate(request: Request):
             max_skew_seconds=MAX_CLOCK_SKEW,
         )
     except SignatureError as exc:
-        logger.warning("rejected request: %s", exc.reason)  # no secrets, no full sig
+        logger.warning("rejected request: %s", exc.reason)
         raise HTTPException(status_code=exc.status_code, detail=exc.reason)
 
-    injected_ms = random.uniform(MIN_LATENCY_MS, MAX_LATENCY_MS)
-    await asyncio.sleep(injected_ms / 1000.0)  # async sleep, never time.sleep
+    # Novelty 2: Speculative Pre-Warm Ping Handler
+    is_prewarm = (
+        h.get("x-burstops-prewarm", "").lower() == "true"
+        or request.query_params.get("prewarm") == "true"
+    )
+    if is_prewarm:
+        _cold["started"] = True
+        return JSONResponse(
+            {
+                "status": "WARM_READY",
+                "instance_id": socket.gethostname()[:8],
+                "prewarmed": True,
+                "source": "serverless",
+                "impl": "dummy-serverless",
+            }
+        )
 
-    primes = prime_sieve(PRIME_LIMIT)
     cold_start = not _cold["started"]
     _cold["started"] = True
+
+    injected_ms = random.uniform(MIN_LATENCY_MS, MAX_LATENCY_MS)
+    await asyncio.sleep(injected_ms / 1000.0)
+
+    # Check for Digital Twin payload
+    body_json = {}
+    if body:
+        try:
+            body_json = json.loads(body.decode("utf-8"))
+        except Exception:
+            body_json = {}
+
+    query_params = dict(request.query_params)
+    for k, v in query_params.items():
+        if k not in body_json:
+            body_json[k] = v
+
+    if "subsystem" in body_json or "twin_id" in body_json:
+        result = await asyncio.to_thread(
+            execute_digital_twin_workload, body_json, "AZURE_SERVERLESS_FUNCTION"
+        )
+        result["injected_latency_ms"] = round(injected_ms, 1)
+        result["cold_start"] = cold_start
+        return JSONResponse(result)
+
+    primes = prime_sieve(PRIME_LIMIT)
     return JSONResponse(
         {
             "source": "serverless",
             "impl": "dummy-serverless",
+            "executed_by": "AZURE_SERVERLESS_FUNCTION",
             "hostname": socket.gethostname(),
+            "instance_id": socket.gethostname()[:8],
             "prime_count": len(primes),
             "prime_sum": sum(primes),
             "injected_latency_ms": round(injected_ms, 1),
