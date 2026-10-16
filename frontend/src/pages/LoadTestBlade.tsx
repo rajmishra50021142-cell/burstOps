@@ -29,7 +29,11 @@ import {
   GoldenTrioTelemetry,
   LogEntry,
 } from '../types';
-import { sendDigitalTwinCompute, fetchGoldenTrioTelemetry } from '../lib/gatewayApi';
+import {
+  sendDigitalTwinCompute,
+  fetchGoldenTrioTelemetry,
+  getGatewayBaseUrl,
+} from '../lib/gatewayApi';
 import { ExecutionConsole } from '../components/ExecutionConsole';
 
 interface LoadTestBladeProps {
@@ -164,24 +168,40 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
     };
   }, []);
 
-  // Worker Code Template for in-browser streaming
-  const createWorkerScript = () => `
+  // Resolve absolute API URL for Blob Web Workers running under blob: origin
+  const resolveAbsoluteTwinComputeUrl = useCallback((): string => {
+    const base = getGatewayBaseUrl();
+    const cleanBase = (base || (typeof window !== 'undefined' ? window.location.origin : '')).trim().replace(/\/+$/, '');
+    
+    if (cleanBase.startsWith('http://') || cleanBase.startsWith('https://')) {
+      return `${cleanBase}/api/twin/compute`;
+    }
+    
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000';
+    const path = cleanBase ? (cleanBase.startsWith('/') ? cleanBase : `/${cleanBase}`) : '';
+    return `${origin}${path}/api/twin/compute`;
+  }, []);
+
+  // Worker Code Template for in-browser streaming with resolved absolute API URL
+  const createWorkerScript = (absoluteComputeUrl: string) => `
     let active = true;
     let cfg = {};
+    const defaultEndpoint = "${absoluteComputeUrl}";
 
     self.onmessage = function(e) {
       if (e.data.type === 'START') {
         active = true;
-        cfg = e.data.config;
+        cfg = e.data.config || {};
         loop();
       } else if (e.data.type === 'UPDATE') {
-        cfg = { ...cfg, ...e.data.config };
+        cfg = { ...cfg, ...(e.data.config || {}) };
       } else if (e.data.type === 'STOP') {
         active = false;
       }
     };
 
     async function loop() {
+      const targetUrl = cfg.targetUrl || defaultEndpoint;
       while (active) {
         try {
           const payload = {
@@ -194,7 +214,7 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
           };
 
           const t0 = performance.now();
-          const resp = await fetch('/api/twin/compute', {
+          const resp = await fetch(targetUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
             body: JSON.stringify(payload)
@@ -249,7 +269,8 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
 
     let useWorkers = true;
     try {
-      const script = createWorkerScript();
+      const computeUrl = resolveAbsoluteTwinComputeUrl();
+      const script = createWorkerScript(computeUrl);
       const blob = new Blob([script], { type: 'application/javascript' });
 
       for (let i = 0; i < streamMultiplier; i++) {
@@ -303,6 +324,7 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
             temperatureC: isSpikeActive ? 115 : temperatureC,
             monteCarloIterations: effectiveIterations,
             delayMs: baseDelay + (i * 40),
+            targetUrl: computeUrl,
           },
         });
 
@@ -356,6 +378,7 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
     isSpikeActive,
     handleExecutionResult,
     addLog,
+    resolveAbsoluteTwinComputeUrl,
   ]);
 
   // Handle temporary fault spike
