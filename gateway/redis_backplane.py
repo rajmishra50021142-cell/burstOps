@@ -155,9 +155,23 @@ class RedisBackplane:
         self.is_leader = False
 
     # ---- capacity slots tracking ---------------------------------------------
+    async def reset_active_slots(self) -> int:
+        try:
+            await self._client.set(REDIS_ACTIVE_SLOTS_KEY, "0")
+            await self._client.set("aks:active_slots", "0")
+            self._set_up(True)
+            return 0
+        except Exception:
+            self._err("reset_slots")
+            return 0
+
     async def incr_active_slots(self) -> int:
         try:
             val = await self._client.incr(REDIS_ACTIVE_SLOTS_KEY)
+            try:
+                await self._client.set("aks:active_slots", str(val))
+            except Exception:
+                pass
             self._set_up(True)
             return int(val)
         except Exception:
@@ -172,8 +186,13 @@ class RedisBackplane:
                 cur = await self._client.get(REDIS_ACTIVE_SLOTS_KEY)
                 val = max(0, int(cur or 0) - 1)
                 await self._client.set(REDIS_ACTIVE_SLOTS_KEY, str(val))
+            val_clamped = max(0, int(val))
+            try:
+                await self._client.set("aks:active_slots", str(val_clamped))
+            except Exception:
+                pass
             self._set_up(True)
-            return max(0, int(val))
+            return val_clamped
         except Exception:
             self._err("decr_slots")
             return 0
@@ -181,6 +200,8 @@ class RedisBackplane:
     async def get_active_slots(self) -> int:
         try:
             val = await self._client.get(REDIS_ACTIVE_SLOTS_KEY)
+            if val is None:
+                val = await self._client.get("aks:active_slots")
             self._set_up(True)
             return int(val) if val is not None else 0
         except Exception:

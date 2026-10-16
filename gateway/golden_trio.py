@@ -65,6 +65,9 @@ _last_prewarm_ping_time: float = 0.0
 _prewarm_state: str = "IDLE"
 _prewarm_saves_count: int = 0
 _in_memory_slots: int = 0
+_slots_lock: asyncio.Lock = asyncio.Lock()
+
+
 class AIMDThresholdController:
     """Novelty 1: Self-tuning AIMD threshold controller."""
 
@@ -282,6 +285,19 @@ async def decr_slot(gw_mod) -> int:
     async with _slots_lock:
         _in_memory_slots = max(0, _in_memory_slots - 1)
         return _in_memory_slots
+
+
+async def reset_slots(gw_mod=None) -> int:
+    global _in_memory_slots
+    async with _slots_lock:
+        _in_memory_slots = 0
+    if gw_mod is not None and getattr(gw_mod, "_backplane", None) is not None:
+        try:
+            if hasattr(gw_mod._backplane, "reset_active_slots"):
+                await gw_mod._backplane.reset_active_slots()
+        except Exception:
+            pass
+    return 0
 
 
 def install_golden_trio(gw_mod):

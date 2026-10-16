@@ -8,17 +8,44 @@ import {
 } from '../types';
 import { parsePrometheusMetrics } from './prometheusParser';
 
-const DEFAULT_GATEWAY_BASE = '/gateway';
+// Dynamically resolves to current browser origin in production / mobile / Render
+export const VITE_API_BASE_URL: string = (() => {
+  const env = (import.meta as any)?.env;
+  const envVal = env?.VITE_API_BASE_URL;
+  if (envVal && typeof envVal === 'string' && envVal.trim().length > 0) {
+    return envVal.trim().replace(/\/+$/, '');
+  }
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+  return '';
+})();
+
 const DEFAULT_CPUSIM_BASE = '/cpu-sim';
 
 export function getGatewayBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const custom = localStorage.getItem('burstops_gateway_url');
     if (custom && custom.trim().length > 0) {
-      return custom.trim().replace(/\/+$/, '');
+      // Clear any stale localhost configuration if accessed via remote Render URL or mobile
+      const isRemote = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+      if (isRemote && (custom.includes('localhost') || custom.includes('127.0.0.1'))) {
+        localStorage.removeItem('burstops_gateway_url');
+      } else {
+        return custom.trim().replace(/\/+$/, '');
+      }
     }
   }
-  return DEFAULT_GATEWAY_BASE;
+
+  if (VITE_API_BASE_URL && VITE_API_BASE_URL.trim().length > 0) {
+    return VITE_API_BASE_URL;
+  }
+
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+
+  return '';
 }
 
 export function setGatewayBaseUrl(url: string): void {

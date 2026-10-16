@@ -1,5 +1,21 @@
 import os
+from pathlib import Path
 from pydantic import BaseModel, Field
+
+# Load optional .env.azure if available and not already in environment
+_env_azure = Path(__file__).resolve().parent.parent / ".env.azure"
+if _env_azure.exists():
+    try:
+        with open(_env_azure, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k, _v = _k.strip(), _v.strip()
+                    if _k not in os.environ:
+                        os.environ[_k] = _v
+    except Exception:
+        pass
 
 
 class Settings(BaseModel):
@@ -35,6 +51,20 @@ class Settings(BaseModel):
     )
     AZURE_APP_INSIGHTS: str = Field(
         default=os.getenv("AZURE_APP_INSIGHTS", "log-burstops-ga3cvf")
+    )
+
+    # Serverless Deflection & Upstream Keys
+    FUNCTION_UPSTREAM: str = Field(
+        default=os.getenv("FUNCTION_UPSTREAM", "https://func-burstops-cloud-ga3cvf.azurewebsites.net/api/calculate")
+    )
+    FUNCTION_KEY: str = Field(
+        default=os.getenv("FUNCTION_KEY", "local-dev-function-key")
+    )
+    GATEWAY_HMAC_SECRET: str = Field(
+        default=os.getenv("GATEWAY_HMAC_SECRET", "local-dev-secret-change-in-prod")
+    )
+    REDIS_URL: str = Field(
+        default=os.getenv("REDIS_URL", "")
     )
 
     # Safety, Cooldown, and Limits

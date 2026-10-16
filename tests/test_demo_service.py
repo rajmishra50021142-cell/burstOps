@@ -211,3 +211,105 @@ def test_full_mocked_integration_flow():
         rec_resp = client.post("/api/demo/recover")
         assert rec_resp.status_code == 200
         assert rec_resp.json()["run_id"] == run_id
+
+
+def test_golden_trio_status_initial_zero_slots():
+    """Verify that on startup, active slots drop to 0 / 10 instead of being stuck at 2."""
+    with TestClient(app) as client:
+        resp = client.get("/api/golden-trio/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "capacity_model" in data
+        assert data["capacity_model"]["aks_base_capacity_slots"] == 10
+        assert data["capacity_model"]["active_compute_slots"] == 0
+        assert data["capacity_model"]["slot_saturation_pct"] == 0.0
+        assert "novelty_1_aimd_threshold" in data
+        assert "novelty_2_predictive_prewarm" in data
+        assert "novelty_3_semantic_gamma" in data
+
+
+def test_twin_compute_provenance_and_local_execution():
+    """Verify /api/twin/compute baseline execution on AKS_BASE_POD and explicit provenance fields."""
+    with TestClient(app) as client:
+        payload = {
+            "twin_id": "WT-UNIT-01",
+            "subsystem": "MONTE_CARLO_RUL",
+            "rpm": 1800,
+            "temperature_c": 75,
+            "monte_carlo_iterations": 10000,
+        }
+        resp = client.post("/api/twin/compute", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Required fields for ExecutionConsole.tsx
+        assert data["executed_by"] == "AKS_BASE_POD"
+        assert "cpu_time_ms" in data and data["cpu_time_ms"] >= 0.0
+        assert "wall_time_ms" in data and data["wall_time_ms"] >= 0.0
+        assert "verification_hash" in data and len(data["verification_hash"]) == 64
+        assert "physics_output" in data
+        assert data["physics_output"]["verification_hash"] == data["verification_hash"]
+        assert data["route"] == "k8s"
+        assert data["routing_reason"] == "BASELINE_K8S_NORMAL"
+        assert "gamma_ratio" in data
+
+
+def test_twin_compute_serverless_deflection_under_high_load():
+    """Verify that when load exceeds threshold, high gamma workloads deflect to serverless."""
+    with TestClient(app) as client:
+        # Simulate active burst
+        manager.adapter.is_running = True
+        manager.adapter.cpu = 88.0
+        manager.adapter.mode = "burst"
+
+        payload = {
+            "twin_id": "WT-UNIT-BURST",
+            "subsystem": "MONTE_CARLO_RUL",
+            "rpm": 2200,
+            "temperature_c": 95,
+            "monte_carlo_iterations": 200000,
+        }
+        resp = client.post("/api/twin/compute", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["executed_by"] == "AZURE_SERVERLESS_FUNCTION"
+        assert data["route"] == "serverless"
+        assert data["routing_reason"] == "DEFLECTED_SERVERLESS_HIGH_GAMMA"
+        assert "verification_hash" in data
+        assert data["gamma_ratio"] > 1.5
+
+
+def test_twin_compute_low_gamma_pinned_under_high_load():
+    """Verify that low gamma tasks (THERMAL_STATE_CHECK) stay pinned to AKS even under load."""
+    with TestClient(app) as client:
+        manager.adapter.is_running = True
+        manager.adapter.cpu = 88.0
+        manager.adapter.mode = "burst"
+
+        payload = {
+            "twin_id": "WT-UNIT-LOW-GAMMA",
+            "subsystem": "THERMAL_STATE_CHECK",
+            "temperature_c": 70,
+        }
+        resp = client.post("/api/twin/compute", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["executed_by"] == "AKS_BASE_POD"
+        assert data["route"] == "k8s"
+        assert data["routing_reason"] == "PINNED_AKS_LOW_GAMMA"
+        assert data["gamma_ratio"] < 1.5
+
+
+def test_gateway_shim_and_calculate_alias():
+    """Verify that /gateway/ prefix requests and /calculate work seamlessly."""
+    with TestClient(app) as client:
+        resp = client.get("/gateway/api/golden-trio/status")
+        assert resp.status_code == 200
+        assert resp.json()["capacity_model"]["aks_base_capacity_slots"] == 10
+
+        calc_resp = client.post("/calculate", json={"subsystem": "THERMAL_STATE_CHECK"})
+        assert calc_resp.status_code == 200
+        assert "verification_hash" in calc_resp.json()
+
