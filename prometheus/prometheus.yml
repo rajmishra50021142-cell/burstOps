@@ -23,10 +23,6 @@ scrape_configs:
     scheme: https
     static_configs:
       - targets: ["burstops-demo.onrender.com"]
-    metric_relabel_configs:
-      - source_labels: [__name__]
-        regex: 'gateway_.*|requests_.*|burstops_.*'
-        action: keep
 
   - job_name: cpu-sim
     static_configs:
