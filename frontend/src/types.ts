@@ -220,4 +220,11 @@ export interface GoldenTrioTelemetry {
     gamma_threshold: number;
     subsystems: Record<string, { gamma: number; policy: string }>;
   };
+  global_stats?: {
+    global_aks_completed?: number;
+    global_serverless_completed?: number;
+    total_completed?: number;
+    recent_k8s_count?: number;
+    recent_serverless_count?: number;
+  };
 }

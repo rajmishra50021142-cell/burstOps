@@ -208,6 +208,25 @@ class RedisBackplane:
             self._err("get_slots")
             return 0
 
+    async def register_stream_lease(self, stream_id: str, ttl: float = 2.5) -> None:
+        try:
+            await self._client.set(f"burstops:lease:{stream_id}", "1", ex=int(ttl + 1))
+            self._set_up(True)
+        except Exception:
+            self._err("lease")
+
+    async def clear_stream_leases(self, client_id: str = None) -> None:
+        try:
+            if client_id:
+                keys = await self._client.keys(f"burstops:lease:{client_id}:*")
+            else:
+                keys = await self._client.keys("burstops:lease:*")
+            if keys:
+                await self._client.delete(*keys)
+            self._set_up(True)
+        except Exception:
+            self._err("clear_leases")
+
     # ---- state publish / subscribe -------------------------------------------
     async def publish_state(
         self,

@@ -75,7 +75,7 @@
             "type": "prometheus",
             "uid": "burstops-prometheus"
           },
-          "expr": "gateway_routing_mode",
+          "expr": "max(gateway_routing_mode)",
           "legendFormat": "routing mode",
           "refId": "A"
         }
@@ -416,7 +416,7 @@
             "type": "prometheus",
             "uid": "burstops-prometheus"
           },
-          "expr": "gateway_prometheus_poll_failures_total",
+          "expr": "max(gateway_prometheus_poll_failures_total)",
           "legendFormat": "poll failures",
           "refId": "A"
         }

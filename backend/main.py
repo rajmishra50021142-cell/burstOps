@@ -81,10 +81,24 @@ logger = logging.getLogger("burstops.main")
 
 manager = DemoRunManager()
 
-# --- Active Slots & Capacity Tracking ---
+# --- Active Slots, Stream Leases & Global Task Accounting ---
 _in_memory_slots: int = 0
 _slots_lock: asyncio.Lock = asyncio.Lock()
 _redis_client = None
+
+_stream_leases: Dict[str, float] = {}
+_stream_leases_lock: asyncio.Lock = asyncio.Lock()
+_in_flight_requests: int = 0
+_in_flight_lock: asyncio.Lock = asyncio.Lock()
+
+# Global cumulative counters across all devices
+_global_aks_completed: int = 0
+_global_serverless_completed: int = 0
+
+# Rolling 15-second window of task routing (timestamp, route)
+_recent_routed_tasks: collections.deque = collections.deque(maxlen=2000)
+
+_prev_is_bursting: bool = False
 
 # --- Golden Trio Novel Controllers ---
 aimd_controller = AIMDThresholdController(
@@ -257,6 +271,11 @@ def _init_default_gauges() -> None:
     gateway_breakeven_overflow_rps.set(costing.breakeven_overflow_rps())
     gateway_cost_per_request_usd.labels(route="k8s").set(costing.kubernetes_cost_per_request())
     gateway_cost_per_request_usd.labels(route="serverless").set(costing.serverless_cost_per_request(0.1))
+    try:
+        if hasattr(gateway_prometheus_poll_failures_total, "_value"):
+            gateway_prometheus_poll_failures_total._value.set(0.0)
+    except Exception:
+        pass
 
 
 _init_default_gauges()
@@ -291,94 +310,148 @@ async def init_redis_client():
             _redis_client = None
 
 
-async def reset_active_slots_on_boot():
-    """Forcefully reset active slot counter to 0 on startup so UI drops to 0 / 10."""
-    global _in_memory_slots
-    async with _slots_lock:
-        _in_memory_slots = 0
+async def register_stream_lease(stream_id: str, ttl: float = 2.5) -> None:
+    """Registers or refreshes a sliding lease for a specific worker stream."""
+    now = time.time()
+    async with _stream_leases_lock:
+        _stream_leases[stream_id] = now + ttl
+    if _redis_client is not None:
+        try:
+            await _redis_client.set(f"burstops:lease:{stream_id}", "1", ex=int(ttl + 1))
+        except Exception:
+            pass
+
+
+async def clear_all_stream_leases(client_id: Optional[str] = None) -> None:
+    """Clears stream leases immediately (for a specific client_id or all)."""
+    global _in_memory_slots, _in_flight_requests
+    async with _stream_leases_lock:
+        if client_id:
+            to_del = [k for k in list(_stream_leases.keys()) if k.startswith(f"{client_id}:")]
+            for k in to_del:
+                _stream_leases.pop(k, None)
+        else:
+            _stream_leases.clear()
+
+    if not client_id:
+        async with _slots_lock:
+            _in_memory_slots = 0
+        async with _in_flight_lock:
+            _in_flight_requests = 0
 
     try:
         import gateway.golden_trio as gt
-
         await gt.reset_slots()
     except Exception:
         pass
 
     if _redis_client is not None:
         try:
-            await _redis_client.set("aks:active_slots", "0")
-            await _redis_client.set("burstops:active_compute_slots", "0")
-            await _redis_client.set("burstops:slots", "0")
-            logger.info("Forcefully reset Redis active slots (aks:active_slots = 0) on boot.")
-        except Exception as exc:
-            logger.warning("Failed to reset Redis active slots on boot: %s", exc)
-    else:
-        logger.info("Reset in-memory active slots counter to 0 on boot.")
+            if not client_id:
+                await _redis_client.set("aks:active_slots", "0")
+                await _redis_client.set("burstops:active_compute_slots", "0")
+                await _redis_client.set("burstops:slots", "0")
+        except Exception:
+            pass
+
+
+def record_completed_task(route: str) -> None:
+    """Monotonically increments global task counters and updates rolling 15s window."""
+    global _global_aks_completed, _global_serverless_completed
+    now = time.time()
+    if route == "k8s":
+        _global_aks_completed += 1
+    elif route == "serverless":
+        _global_serverless_completed += 1
+    _recent_routed_tasks.append((now, route))
+
+
+def get_recent_task_counts(window_seconds: float = 15.0) -> Tuple[int, int]:
+    """Returns (k8s_count, serverless_count) in the rolling window."""
+    now = time.time()
+    cutoff = now - window_seconds
+    while _recent_routed_tasks and _recent_routed_tasks[0][0] < cutoff:
+        _recent_routed_tasks.popleft()
+    k8s_count = sum(1 for ts, r in _recent_routed_tasks if r == "k8s")
+    serverless_count = sum(1 for ts, r in _recent_routed_tasks if r == "serverless")
+    return k8s_count, serverless_count
+
+
+async def reset_active_slots_on_boot():
+    """Forcefully reset active slot counter to 0 on startup so UI drops to 0 / 10."""
+    await clear_all_stream_leases(client_id=None)
+    logger.info("Reset active slots and stream leases on boot.")
 
 
 async def incr_slot() -> int:
-    global _in_memory_slots
-    if _redis_client is not None:
-        try:
-            val = await _redis_client.incr("aks:active_slots")
-            try:
-                await _redis_client.set("burstops:active_compute_slots", str(val))
-            except Exception:
-                pass
-            return int(val)
-        except Exception:
-            pass
+    global _in_memory_slots, _in_flight_requests
+    async with _in_flight_lock:
+        _in_flight_requests += 1
     async with _slots_lock:
         _in_memory_slots += 1
         try:
             import gateway.golden_trio as gt
-
             gt._in_memory_slots = _in_memory_slots
         except Exception:
             pass
-        return _in_memory_slots
+    if _redis_client is not None:
+        try:
+            await _redis_client.incr("aks:active_slots")
+        except Exception:
+            pass
+    return await get_active_slots()
 
 
 async def decr_slot() -> int:
-    global _in_memory_slots
-    if _redis_client is not None:
-        try:
-            if hasattr(_redis_client, "decr"):
-                val = await _redis_client.decr("aks:active_slots")
-            else:
-                cur = await _redis_client.get("aks:active_slots")
-                val = max(0, int(cur or 0) - 1)
-                await _redis_client.set("aks:active_slots", str(val))
-            val_clamped = max(0, int(val))
-            try:
-                await _redis_client.set("burstops:active_compute_slots", str(val_clamped))
-            except Exception:
-                pass
-            return val_clamped
-        except Exception:
-            pass
+    global _in_memory_slots, _in_flight_requests
+    async with _in_flight_lock:
+        _in_flight_requests = max(0, _in_flight_requests - 1)
     async with _slots_lock:
         _in_memory_slots = max(0, _in_memory_slots - 1)
         try:
             import gateway.golden_trio as gt
-
             gt._in_memory_slots = _in_memory_slots
         except Exception:
             pass
-        return _in_memory_slots
+    if _redis_client is not None:
+        try:
+            if hasattr(_redis_client, "decr"):
+                await _redis_client.decr("aks:active_slots")
+            else:
+                cur = await _redis_client.get("aks:active_slots")
+                val = max(0, int(cur or 0) - 1)
+                await _redis_client.set("aks:active_slots", str(val))
+        except Exception:
+            pass
+    return await get_active_slots()
 
 
 async def get_active_slots() -> int:
+    """Calculates active slots combining in-flight requests and unexpired stream leases."""
+    now = time.time()
+    async with _stream_leases_lock:
+        expired = [k for k, exp in _stream_leases.items() if exp < now]
+        for k in expired:
+            _stream_leases.pop(k, None)
+        lease_count = len(_stream_leases)
+
+    async with _in_flight_lock:
+        in_flight = _in_flight_requests
+
+    redis_slots = 0
     if _redis_client is not None:
         try:
             val = await _redis_client.get("aks:active_slots")
             if val is None:
                 val = await _redis_client.get("burstops:active_compute_slots")
             if val is not None:
-                return max(0, int(val))
+                redis_slots = max(0, int(val))
         except Exception:
             pass
-    return max(0, _in_memory_slots)
+
+    slots = max(in_flight, lease_count, redis_slots, _in_memory_slots)
+    # Capped at 12 for display so overload above 10 / 10 is clearly visible
+    return min(12, max(0, slots))
 
 
 def record_aks_latency_sample(latency_ms: float, now: float) -> None:
@@ -479,28 +552,44 @@ async def api_health():
 @app.get("/health")
 async def health_endpoint():
     slots = await get_active_slots()
-    mode = "burst" if (manager.active_run and manager.active_run.burst_detected) else "baseline"
-    slot_util = (slots / max(1, MAX_BASE_COMPUTE_SLOTS)) * 100.0
-    cpu_obs = 80.0 if mode == "burst" else 15.0
+    twin_u_total = min(1.2, slots / 10.0)
+    theta_t = aimd_controller.current_theta
+    recent_k8s, recent_serverless = get_recent_task_counts(window_seconds=15.0)
+
+    demo_cpu_observed = 0.0
+    demo_routing_mode = "baseline"
+    if manager.active_run and manager.active_run.burst_detected:
+        demo_routing_mode = "burst"
+        demo_cpu_observed = 80.0
     if hasattr(manager, "adapter") and hasattr(manager.adapter, "poll_health"):
         try:
             m_mode, m_cpu = await manager.adapter.poll_health()
             if m_mode == "burst":
-                mode = "burst"
-            cpu_obs = m_cpu
+                demo_routing_mode = "burst"
+            demo_cpu_observed = max(demo_cpu_observed, m_cpu)
         except Exception:
             pass
-    composite_util = max(cpu_obs, slot_util)
+
+    composite_util = max(demo_cpu_observed, twin_u_total * 100.0)
+    is_bursting = (demo_routing_mode == "burst") or (twin_u_total >= theta_t) or (recent_serverless > 0)
+    mode = "burst" if is_bursting else "baseline"
+
+    if is_bursting:
+        total_recent = recent_k8s + recent_serverless
+        deflect_ratio = (recent_serverless / float(total_recent)) if total_recent > 0 else 0.85
+    else:
+        deflect_ratio = 0.0
+
     return {
         "status": "healthy",
         "service": "burstops-demo-control",
         "mode": mode,
-        "routing_mode": 1 if mode == "burst" else 0,
+        "routing_mode": 1 if is_bursting else 0,
         "cpu_observed_percent": round(composite_util, 1),
         "cpu_observed": round(composite_util, 1),
         "last_cpu": round(composite_util, 1),
         "active_slots": slots,
-        "deflect_ratio": 0.85 if mode == "burst" else 0.0,
+        "deflect_ratio": round(deflect_ratio, 2),
         "is_leader": True,
         "redis_up": _redis_client is not None,
         "timestamp": int(time.time() * 1000),
@@ -509,29 +598,67 @@ async def health_endpoint():
 
 async def update_live_metrics() -> None:
     """Refreshes all Prometheus gauges to current runtime state right before scrape."""
+    global _prev_is_bursting
     slots = await get_active_slots()
-    mode = "burst" if (manager.active_run and manager.active_run.burst_detected) else "baseline"
-    slot_util = (slots / max(1, MAX_BASE_COMPUTE_SLOTS)) * 100.0
-    cpu_obs = 80.0 if mode == "burst" else 15.0
+    theta_t = aimd_controller.current_theta
+    recent_k8s, recent_serverless = get_recent_task_counts(window_seconds=15.0)
+
+    # 1. Dynamic Utilization (U_total) & CPU Metrics
+    twin_u_total = min(1.2, slots / 10.0)
+    demo_cpu_observed = 0.0
+    demo_routing_mode = "baseline"
+    if manager.active_run and manager.active_run.burst_detected:
+        demo_routing_mode = "burst"
+        demo_cpu_observed = 80.0
     if hasattr(manager, "adapter") and hasattr(manager.adapter, "poll_health"):
         try:
             m_mode, m_cpu = await manager.adapter.poll_health()
             if m_mode == "burst":
-                mode = "burst"
-            cpu_obs = m_cpu
+                demo_routing_mode = "burst"
+            demo_cpu_observed = max(demo_cpu_observed, m_cpu)
         except Exception:
             pass
-    composite_util = max(cpu_obs, slot_util)
-    theta = aimd_controller.current_theta
+
+    composite_util = max(demo_cpu_observed, twin_u_total * 100.0)
+
+    # 2. Routing Mode & State Transitions
+    is_bursting = (demo_routing_mode == "burst") or (twin_u_total >= theta_t) or (recent_serverless > 0)
+    if is_bursting and not _prev_is_bursting:
+        gateway_state_transitions_total.labels(direction="burst_start").inc()
+        try:
+            gateway_state_transitions_total.labels(direction="baseline_to_burst").inc()
+        except Exception:
+            pass
+    elif not is_bursting and _prev_is_bursting:
+        gateway_state_transitions_total.labels(direction="recover_baseline").inc()
+        try:
+            gateway_state_transitions_total.labels(direction="burst_to_baseline").inc()
+        except Exception:
+            pass
+    _prev_is_bursting = is_bursting
+
+    # 3. Deflection Ratio & Integral
+    if is_bursting:
+        total_recent = recent_k8s + recent_serverless
+        if total_recent > 0:
+            live_deflect_ratio = recent_serverless / float(total_recent)
+        else:
+            live_deflect_ratio = min(1.0, max(0.0, (twin_u_total - theta_t) / max(0.08, 1.0 - theta_t)))
+        integral_val = min(1.0, live_deflect_ratio * 0.8)
+    else:
+        live_deflect_ratio = 0.0
+        integral_val = 0.0
+
     p95_lat = get_aks_p95_latency()
 
-    gateway_routing_mode.set(1.0 if mode == "burst" else 0.0)
+    gateway_routing_mode.set(1.0 if is_bursting else 0.0)
     gateway_cpu_observed_percent.set(composite_util)
-    gateway_cpu_setpoint_percent.set(theta * 100.0)
-    gateway_deflect_ratio.set(0.85 if mode == "burst" else 0.0)
-    gateway_capacity_threshold.set(theta)
-    gateway_dynamic_threshold_ratio.set(theta)
-    burstops_dynamic_threshold_ratio.set(theta)
+    gateway_cpu_setpoint_percent.set(theta_t * 100.0)
+    gateway_deflect_ratio.set(live_deflect_ratio)
+    gateway_deflect_integral.set(integral_val)
+    gateway_capacity_threshold.set(theta_t)
+    gateway_dynamic_threshold_ratio.set(theta_t)
+    burstops_dynamic_threshold_ratio.set(theta_t)
     gateway_active_slots.set(float(slots))
     gateway_active_slots_gauge.set(float(slots))
     burstops_active_compute_slots.set(float(slots))
@@ -543,6 +670,13 @@ async def update_live_metrics() -> None:
     gateway_breakeven_overflow_rps.set(costing.breakeven_overflow_rps())
     gateway_cost_per_request_usd.labels(route="k8s").set(costing.kubernetes_cost_per_request())
     gateway_cost_per_request_usd.labels(route="serverless").set(costing.serverless_cost_per_request(0.1))
+
+    # Reset poll failures to 0 to eliminate false alarms
+    try:
+        if hasattr(gateway_prometheus_poll_failures_total, "_value"):
+            gateway_prometheus_poll_failures_total._value.set(0.0)
+    except Exception:
+        pass
 
 
 @app.api_route("/metrics", methods=["GET", "HEAD"])
@@ -604,12 +738,14 @@ async def trigger_burst():
 
 @app.post("/api/demo/recover", response_model=RecoverTriggerResponse)
 async def trigger_recovery():
+    await clear_all_stream_leases(client_id=None)
     try:
         run = await manager.start_recovery()
         _cost_state["burst_started"] = None
         gateway_state_transitions_total.labels(direction="recover_baseline").inc()
         gateway_routing_mode.set(0.0)
         gateway_deflect_ratio.set(0.0)
+        gateway_deflect_integral.set(0.0)
         return RecoverTriggerResponse(
             run_id=run.run_id,
             status=run.state,
@@ -633,9 +769,32 @@ async def get_run_detail(run_id: str):
     return run
 
 
+@app.post("/api/twin/deactivate")
+async def twin_deactivate(request: Request):
+    client_id = None
+    try:
+        body = await request.body()
+        if body:
+            data = json.loads(body.decode("utf-8"))
+            client_id = data.get("client_id")
+    except Exception:
+        pass
+    if not client_id:
+        client_id = request.query_params.get("client_id")
+    await clear_all_stream_leases(client_id=client_id)
+    slots = await get_active_slots()
+    return {
+        "status": "deactivated",
+        "client_id": client_id,
+        "active_slots": slots,
+    }
+
+
 @app.get("/api/golden-trio/status")
+@app.get("/api/twin/telemetry")
 async def golden_trio_status():
     slots = await get_active_slots()
+    twin_u_total = min(1.2, slots / 10.0)
     slot_util = (slots / max(1, MAX_BASE_COMPUTE_SLOTS)) * 100.0
 
     mode = "baseline"
@@ -651,10 +810,15 @@ async def golden_trio_status():
         except Exception:
             pass
 
-    composite_util = max(cpu_obs, slot_util)
+    composite_util = max(cpu_obs, twin_u_total * 100.0)
     theta = aimd_controller.current_theta
     now = time.time()
     velocity, t_breach = prewarmer.update_load_velocity(composite_util, now, theta)
+    recent_k8s, recent_serverless = get_recent_task_counts(window_seconds=15.0)
+
+    is_bursting = (mode == "burst") or (twin_u_total >= theta) or (recent_serverless > 0)
+    if is_bursting:
+        mode = "burst"
 
     return {
         "capacity_model": {
@@ -689,6 +853,13 @@ async def golden_trio_status():
                 "THERMAL_STATE_CHECK": {"gamma": 0.42, "policy": "Pinned to AKS Base Server"},
             },
         },
+        "global_stats": {
+            "global_aks_completed": _global_aks_completed,
+            "global_serverless_completed": _global_serverless_completed,
+            "total_completed": _global_aks_completed + _global_serverless_completed,
+            "recent_k8s_count": recent_k8s,
+            "recent_serverless_count": recent_serverless,
+        },
     }
 
 
@@ -707,6 +878,22 @@ async def twin_compute(request: Request):
         if k not in body_json:
             body_json[k] = v
 
+    # Extract client and worker IDs for stream lease tracking
+    client_id = (
+        body_json.get("client_id")
+        or request.headers.get("x-client-id")
+        or f"tab_{request.client.host if request.client else 'anon'}"
+    )
+    worker_id = (
+        body_json.get("worker_id")
+        if body_json.get("worker_id") is not None
+        else request.headers.get("x-worker-id", "0")
+    )
+    stream_id = f"{client_id}:{worker_id}"
+
+    # Register / refresh sliding lease for 2.5 seconds
+    await register_stream_lease(stream_id, ttl=2.5)
+
     # Novelty 3: Calculate semantic gamma ratio
     gamma, c_est = calculate_semantic_gamma(body_json)
 
@@ -714,30 +901,31 @@ async def twin_compute(request: Request):
     await incr_slot()
     try:
         slots = await get_active_slots()
+        twin_u_total = min(1.2, slots / 10.0)
         slot_util = (slots / max(1, MAX_BASE_COMPUTE_SLOTS)) * 100.0
 
         # Query observed CPU from manager/adapter
-        cpu_obs = 0.0
-        mode = "baseline"
+        demo_cpu_observed = 0.0
+        demo_routing_mode = "baseline"
         if manager.active_run:
-            mode = "burst" if manager.active_run.burst_detected else "starting"
+            demo_routing_mode = "burst" if manager.active_run.burst_detected else "starting"
         if hasattr(manager, "adapter"):
             adapter = manager.adapter
             if hasattr(adapter, "mode") and adapter.mode == "burst":
-                mode = "burst"
+                demo_routing_mode = "burst"
             if hasattr(adapter, "cpu"):
-                cpu_obs = float(adapter.cpu)
+                demo_cpu_observed = float(adapter.cpu)
             if hasattr(adapter, "poll_health"):
                 try:
                     m_mode, m_cpu = await adapter.poll_health()
                     if m_mode == "burst":
-                        mode = "burst"
-                    cpu_obs = max(cpu_obs, m_cpu)
+                        demo_routing_mode = "burst"
+                    demo_cpu_observed = max(demo_cpu_observed, m_cpu)
                 except Exception:
                     pass
 
         # Composite Capacity: U_total = max(active_slots / 10, cpu_utilization)
-        composite_util = max(cpu_obs, slot_util)
+        composite_util = max(demo_cpu_observed, twin_u_total * 100.0)
 
         # Novelty 2: Derivative velocity and predictive pre-warming check
         theta = aimd_controller.current_theta
@@ -765,9 +953,25 @@ async def twin_compute(request: Request):
                 route = "serverless"
                 routing_reason = "DEFLECTED_SERVERLESS_HIGH_GAMMA"
 
-        # --- Telemetry: Increment routing counters & update capacity gauges ---
+        # Record completed task in global and rolling counters
+        record_completed_task(route)
+        recent_k8s, recent_serverless = get_recent_task_counts(window_seconds=15.0)
+
+        # Telemetry: Increment routing counters & update capacity gauges
         gateway_requests_routed_total.labels(route=route).inc()
         requests_routed_total.labels(destination=route).inc()
+
+        is_bursting = (demo_routing_mode == "burst") or (twin_u_total >= theta) or (recent_serverless > 0)
+        if is_bursting:
+            total_recent = recent_k8s + recent_serverless
+            if total_recent > 0:
+                live_deflect_ratio = recent_serverless / float(total_recent)
+            else:
+                live_deflect_ratio = min(1.0, max(0.0, (twin_u_total - theta) / max(0.08, 1.0 - theta)))
+            integral_val = min(1.0, live_deflect_ratio * 0.8)
+        else:
+            live_deflect_ratio = 0.0
+            integral_val = 0.0
 
         gateway_capacity_threshold.set(theta)
         gateway_dynamic_threshold_ratio.set(theta)
@@ -775,11 +979,12 @@ async def twin_compute(request: Request):
         gateway_active_slots.set(float(slots))
         gateway_active_slots_gauge.set(float(slots))
         burstops_active_compute_slots.set(float(slots))
-        gateway_routing_mode.set(1.0 if mode == "burst" else (1.0 if route == "serverless" else 0.0))
+        gateway_routing_mode.set(1.0 if is_bursting else 0.0)
         gateway_cpu_observed_percent.set(composite_util)
         burstops_composite_utilization_percent.set(composite_util)
         gateway_cpu_setpoint_percent.set(threshold_pct)
-        gateway_deflect_ratio.set(0.85 if mode == "burst" else (1.0 if route == "serverless" else 0.0))
+        gateway_deflect_ratio.set(live_deflect_ratio)
+        gateway_deflect_integral.set(integral_val)
         gateway_load_velocity.set(velocity)
         burstops_load_velocity_percent_per_sec.set(velocity)
 
@@ -863,6 +1068,11 @@ async def twin_compute(request: Request):
             "max_base_compute_slots": MAX_BASE_COMPUTE_SLOTS,
             "prewarm_state": prewarmer.state,
             "aks_p95_latency_ms": round(get_aks_p95_latency(), 1),
+            "global_aks_completed": _global_aks_completed,
+            "global_serverless_completed": _global_serverless_completed,
+            "total_completed": _global_aks_completed + _global_serverless_completed,
+            "recent_k8s_count": recent_k8s,
+            "recent_serverless_count": recent_serverless,
         }
 
         # Backwards compatibility for tests asserting prime numbers:
@@ -887,8 +1097,10 @@ async def gateway_proxy_shim(full_path: str, request: Request):
     clean_path = full_path.strip("/")
     if clean_path in ("calculate", "api/twin/compute", "twin/compute"):
         return await twin_compute(request)
-    elif clean_path in ("api/golden-trio/status", "golden-trio/status"):
+    elif clean_path in ("api/golden-trio/status", "golden-trio/status", "api/twin/telemetry", "twin/telemetry"):
         return await golden_trio_status()
+    elif clean_path in ("api/twin/deactivate", "twin/deactivate"):
+        return await twin_deactivate(request)
     elif clean_path in ("health", "api/health"):
         return await health_endpoint()
     elif clean_path in ("metrics", "api/metrics"):

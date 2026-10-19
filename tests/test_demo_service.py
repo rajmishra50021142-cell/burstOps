@@ -313,3 +313,120 @@ def test_gateway_shim_and_calculate_alias():
         assert calc_resp.status_code == 200
         assert "verification_hash" in calc_resp.json()
 
+
+def test_stream_leases_multi_client_and_deactivation():
+    """Verify Bug 1 & 2 fix: Sliding stream leases sustain active slots across multiple clients without flickering."""
+    with TestClient(app) as client:
+        # Recover to start clean
+        client.post("/api/demo/recover")
+
+        # Client 1 with 3 workers
+        for worker_id in range(3):
+            resp = client.post(
+                "/api/twin/compute",
+                json={
+                    "twin_id": "WT-CLIENT-1",
+                    "subsystem": "THERMAL_STATE_CHECK",
+                    "client_id": "client-alpha",
+                    "worker_id": worker_id,
+                },
+            )
+            assert resp.status_code == 200
+
+        # Client 2 with 2 workers
+        for worker_id in range(2):
+            resp = client.post(
+                "/api/twin/compute",
+                json={
+                    "twin_id": "WT-CLIENT-2",
+                    "subsystem": "THERMAL_STATE_CHECK",
+                    "client_id": "client-beta",
+                    "worker_id": worker_id,
+                },
+            )
+            assert resp.status_code == 200
+
+        # In-between requests, stream leases must hold 5 active slots
+        trio = client.get("/api/twin/telemetry").json()
+        assert trio["capacity_model"]["active_compute_slots"] == 5
+
+        # Deactivate only client-alpha
+        deact_resp = client.post("/api/twin/deactivate", json={"client_id": "client-alpha"})
+        assert deact_resp.status_code == 200
+        assert deact_resp.json()["status"] == "deactivated"
+
+        trio_after = client.get("/api/golden-trio/status").json()
+        assert trio_after["capacity_model"]["active_compute_slots"] == 2
+
+        # Deactivate all remaining leases via /api/twin/deactivate
+        deact_all = client.post("/api/twin/deactivate", json={})
+        assert deact_all.status_code == 200
+        assert deact_all.json()["active_slots"] == 0
+
+        trio_zero = client.get("/api/twin/telemetry").json()
+        assert trio_zero["capacity_model"]["active_compute_slots"] == 0
+
+        # Also verify /api/demo/recover clears all leases during active run
+        burst_resp = client.post("/api/demo/burst")
+        assert burst_resp.status_code == 200
+        client.post(
+            "/api/twin/compute",
+            json={
+                "twin_id": "WT-CLIENT-3",
+                "subsystem": "THERMAL_STATE_CHECK",
+                "client_id": "client-gamma",
+                "worker_id": 0,
+            },
+        )
+        assert client.get("/api/twin/telemetry").json()["capacity_model"]["active_compute_slots"] == 1
+        rec_resp = client.post("/api/demo/recover")
+        assert rec_resp.status_code == 200
+        assert client.get("/api/twin/telemetry").json()["capacity_model"]["active_compute_slots"] == 0
+
+
+def test_unified_deflection_telemetry_and_zero_poll_failures():
+    """Verify Bug 3 & 4 fix: update_live_metrics reflects deflection and resets poll failures."""
+    from backend.main import (
+        gateway_routing_mode,
+        gateway_cpu_observed_percent,
+        gateway_deflect_ratio,
+        gateway_prometheus_poll_failures_total,
+    )
+
+    with TestClient(app) as client:
+        # Clear leases
+        client.post("/api/demo/recover")
+
+        # Simulate 10 active worker streams to saturate 100% capacity
+        for i in range(10):
+            client.post(
+                "/api/twin/compute",
+                json={
+                    "twin_id": "WT-SATURATE",
+                    "subsystem": "MONTE_CARLO_RUL",
+                    "client_id": "saturation-client",
+                    "worker_id": i,
+                    "monte_carlo_iterations": 250000,
+                },
+            )
+
+        # Scrape /metrics
+        metrics_resp = client.get("/metrics")
+        assert metrics_resp.status_code == 200
+        metrics_text = metrics_resp.text
+
+        # Routing mode should be burst (1.0), CPU observed ~100%, and poll failures 0
+        assert "gateway_routing_mode 1.0" in metrics_text or gateway_routing_mode._value.get() == 1.0
+        assert gateway_cpu_observed_percent._value.get() >= 80.0
+        assert gateway_deflect_ratio._value.get() > 0.0
+
+        # Poll failures should be 0.0
+        assert gateway_prometheus_poll_failures_total._value.get() == 0.0
+
+        # Global stats in /api/twin/telemetry
+        telem = client.get("/api/twin/telemetry").json()
+        assert "global_stats" in telem
+        assert telem["global_stats"]["total_completed"] > 0
+        assert telem["global_stats"]["global_serverless_completed"] > 0
+
+

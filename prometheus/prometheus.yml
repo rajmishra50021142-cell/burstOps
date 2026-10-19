@@ -21,6 +21,7 @@ scrape_configs:
 
   - job_name: burstops-gateway
     scheme: https
+    metrics_path: /metrics
     static_configs:
       - targets: ["burstops-demo.onrender.com"]
 

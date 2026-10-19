@@ -3,7 +3,7 @@ services:
     name: burstops-demo-service
     runtime: python
     buildCommand: "pip install -r requirements-demo.txt && cd frontend && npm install && npm run build && cd .."
-    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1"
     envVars:
       - key: DEMO_MODE
         value: cloud

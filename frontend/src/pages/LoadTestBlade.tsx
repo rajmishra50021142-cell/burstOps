@@ -111,8 +111,16 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
   const [aksRoutedCount, setAksRoutedCount] = useState<number>(0);
   const [serverlessRoutedCount, setServerlessRoutedCount] = useState<number>(0);
 
+  // Persistent Client ID for this browser tab
+  const clientIdRef = useRef<string>(
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `client-${Math.random().toString(36).substring(2, 11)}`
+  );
+
   // References for Web Workers and fallbacks
-  const workersRef = useRef<Array<{ worker: Worker; url: string }>>([]);
+  const workersRef = useRef<Array<{ worker: Worker; url: string; workerId: number }>>([]);
+  const blobUrlRef = useRef<string | null>(null);
   const fallbackIntervalsRef = useRef<Array<ReturnType<typeof setInterval>>>([]);
 
   const addLog = useCallback((level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS', message: string) => {
@@ -145,6 +153,11 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
     },
     [addLog]
   );
+
+  const handleExecutionResultRef = useRef(handleExecutionResult);
+  handleExecutionResultRef.current = handleExecutionResult;
+  const addLogRef = useRef(addLog);
+  addLogRef.current = addLog;
 
   // Poll Golden Trio Status every 1.5 seconds
   useEffect(() => {
@@ -182,80 +195,127 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
     return `${origin}${path}/api/twin/compute`;
   }, []);
 
-  // Worker Code Template for in-browser streaming with resolved absolute API URL
+  // Worker Code Template: unkillable async while (isRunning) loop with 50ms cadence & 500ms resilient error retry
   const createWorkerScript = (absoluteComputeUrl: string) => `
-    let active = true;
+    let isRunning = false;
     let cfg = {};
     const defaultEndpoint = "${absoluteComputeUrl}";
 
     self.onmessage = function(e) {
       if (e.data.type === 'START') {
-        active = true;
+        isRunning = true;
         cfg = e.data.config || {};
         loop();
-      } else if (e.data.type === 'UPDATE') {
+      } else if (e.data.type === 'UPDATE' || e.data.type === 'UPDATE_CONFIG') {
         cfg = { ...cfg, ...(e.data.config || {}) };
       } else if (e.data.type === 'STOP') {
-        active = false;
+        isRunning = false;
       }
     };
 
     async function loop() {
       const targetUrl = cfg.targetUrl || defaultEndpoint;
-      while (active) {
+      while (isRunning) {
         try {
           const payload = {
             twin_id: cfg.twinId,
             subsystem: cfg.subsystem,
-            rpm: cfg.rpm + (Math.random() * 40 - 20),
-            temperature_c: cfg.temperatureC + (Math.random() * 4 - 2),
+            rpm: (cfg.rpm || 1800) + (Math.random() * 40 - 20),
+            temperature_c: (cfg.temperatureC || 78) + (Math.random() * 4 - 2),
             vibration_amplitude: 0.05 + Math.random() * 0.1,
-            monte_carlo_iterations: cfg.monteCarloIterations,
+            monte_carlo_iterations: cfg.monteCarloIterations || 180000,
+            client_id: cfg.clientId,
+            worker_id: cfg.workerId,
           };
 
           const t0 = performance.now();
           const resp = await fetch(targetUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'X-Client-ID': String(cfg.clientId || ''),
+              'X-Worker-ID': String(cfg.workerId ?? ''),
+            },
             body: JSON.stringify(payload)
           });
 
           if (resp.ok) {
             const data = await resp.json();
             const wall = Math.round(performance.now() - t0);
-            self.postMessage({ type: 'RESULT', data: { ...data, client_wall_ms: wall, subsystem: cfg.subsystem } });
+            self.postMessage({
+              type: 'RESULT',
+              data: { ...data, client_wall_ms: wall, subsystem: cfg.subsystem }
+            });
+            const delay = cfg.delayMs !== undefined ? cfg.delayMs : 50;
+            await new Promise(r => setTimeout(r, delay));
           } else {
-            self.postMessage({ type: 'LOG', level: 'WARN', message: 'Compute HTTP ' + resp.status });
+            self.postMessage({
+              type: 'LOG',
+              level: 'WARN',
+              message: 'Compute HTTP ' + resp.status + ' - retrying in 500ms'
+            });
+            await new Promise(r => setTimeout(r, 500));
           }
         } catch (err) {
-          self.postMessage({ type: 'LOG', level: 'ERROR', message: 'Worker compute exception: ' + (err.message || String(err)) });
+          self.postMessage({
+            type: 'LOG',
+            level: 'WARN',
+            message: 'Worker compute network notice: ' + (err.message || String(err)) + ' - retrying in 500ms'
+          });
+          await new Promise(r => setTimeout(r, 500));
         }
-
-        const delay = cfg.delayMs || 400;
-        await new Promise(r => setTimeout(r, delay));
       }
     }
   `;
 
-  // Start/Stop Digital Twin Simulation
+  const getOrCreateBlobUrl = useCallback(() => {
+    if (!blobUrlRef.current) {
+      const computeUrl = resolveAbsoluteTwinComputeUrl();
+      const script = createWorkerScript(computeUrl);
+      const blob = new Blob([script], { type: 'application/javascript' });
+      blobUrlRef.current = URL.createObjectURL(blob);
+    }
+    return blobUrlRef.current;
+  }, [resolveAbsoluteTwinComputeUrl]);
+
+  // Start / Stop Digital Twin Simulation — Isolated lifecycle depending ONLY on [isTwinActive]
   useEffect(() => {
-    // Clean up any existing workers or intervals
-    workersRef.current.forEach(({ worker, url }) => {
-      worker.terminate();
-      URL.revokeObjectURL(url);
-    });
-    workersRef.current = [];
-
-    fallbackIntervalsRef.current.forEach((t) => clearInterval(t));
-    fallbackIntervalsRef.current = [];
-
     if (!isTwinActive) {
+      // Terminate all workers
+      workersRef.current.forEach(({ worker }) => {
+        try {
+          worker.postMessage({ type: 'STOP' });
+          worker.terminate();
+        } catch {}
+      });
+      workersRef.current = [];
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+      fallbackIntervalsRef.current.forEach((t) => clearInterval(t));
+      fallbackIntervalsRef.current = [];
+
+      // Send deactivation notification to server to clear active stream leases immediately
+      const deactUrl = `${getGatewayBaseUrl()}/api/twin/deactivate`;
+      fetch(deactUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: clientIdRef.current }),
+      }).catch(() => {
+        fetch('/api/twin/deactivate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: clientIdRef.current }),
+        }).catch(() => {});
+      });
       return;
     }
 
     addLog(
       'INFO',
-      `[TWIN START] Initializing Industrial Wind Turbine ${twinId} with ${streamMultiplier} concurrent streams.`
+      `[TWIN START] Initializing Industrial Wind Turbine ${twinId} with ${streamMultiplier} concurrent streams. ClientID=${clientIdRef.current.substring(0, 8)}...`
     );
 
     const subsystems: DigitalTwinSubsystem[] = [
@@ -265,18 +325,15 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
     ];
 
     const effectiveIterations = isSpikeActive ? 350000 : monteCarloFidelity;
-    const baseDelay = isSpikeActive ? 150 : 380;
+    const baseDelay = isSpikeActive ? 25 : 50;
+    const computeUrl = resolveAbsoluteTwinComputeUrl();
+    const blobUrl = getOrCreateBlobUrl();
 
     let useWorkers = true;
     try {
-      const computeUrl = resolveAbsoluteTwinComputeUrl();
-      const script = createWorkerScript(computeUrl);
-      const blob = new Blob([script], { type: 'application/javascript' });
-
       for (let i = 0; i < streamMultiplier; i++) {
         const subsystem = subsystems[i % subsystems.length];
-        const url = URL.createObjectURL(blob);
-        const worker = new Worker(url);
+        const worker = new Worker(blobUrl);
 
         worker.onmessage = (e) => {
           if (e.data.type === 'RESULT') {
@@ -309,9 +366,9 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
               prewarm_state: meta.prewarm_state,
               cold_start: raw.cold_start ?? false,
             };
-            handleExecutionResult(result);
+            handleExecutionResultRef.current(result);
           } else if (e.data.type === 'LOG') {
-            addLog(e.data.level, e.data.message);
+            addLogRef.current(e.data.level, e.data.message);
           }
         };
 
@@ -323,12 +380,14 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
             rpm,
             temperatureC: isSpikeActive ? 115 : temperatureC,
             monteCarloIterations: effectiveIterations,
-            delayMs: baseDelay + (i * 40),
+            delayMs: baseDelay,
             targetUrl: computeUrl,
+            clientId: clientIdRef.current,
+            workerId: i,
           },
         });
 
-        workersRef.current.push({ worker, url });
+        workersRef.current.push({ worker, url: blobUrl, workerId: i });
       }
     } catch (workerErr) {
       useWorkers = false;
@@ -348,10 +407,12 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
               temperature_c: isSpikeActive ? 115 : temperatureC,
               vibration_amplitude: 0.08,
               monte_carlo_iterations: effectiveIterations,
-            });
-            handleExecutionResult(res);
+              client_id: clientIdRef.current,
+              worker_id: i,
+            } as any);
+            handleExecutionResultRef.current(res);
           } catch (err: any) {
-            addLog('WARN', `Direct compute error: ${err.message || String(err)}`);
+            addLogRef.current('WARN', `Direct compute error: ${err.message || String(err)}`);
           }
         }, baseDelay + i * 50);
         fallbackIntervalsRef.current.push(timer);
@@ -359,27 +420,130 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
     }
 
     return () => {
-      workersRef.current.forEach(({ worker, url }) => {
-        worker.terminate();
-        URL.revokeObjectURL(url);
+      workersRef.current.forEach(({ worker }) => {
+        try {
+          worker.postMessage({ type: 'STOP' });
+          worker.terminate();
+        } catch {}
       });
       workersRef.current = [];
-
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
       fallbackIntervalsRef.current.forEach((t) => clearInterval(t));
       fallbackIntervalsRef.current = [];
     };
-  }, [
-    isTwinActive,
-    twinId,
-    rpm,
-    temperatureC,
-    monteCarloFidelity,
-    streamMultiplier,
-    isSpikeActive,
-    handleExecutionResult,
-    addLog,
-    resolveAbsoluteTwinComputeUrl,
-  ]);
+  }, [isTwinActive]);
+
+  // Dynamically update active worker setpoints without tearing down workers
+  useEffect(() => {
+    if (!isTwinActive || workersRef.current.length === 0) return;
+    const effectiveIterations = isSpikeActive ? 350000 : monteCarloFidelity;
+    const effectiveTemp = isSpikeActive ? 115 : temperatureC;
+    const baseDelay = isSpikeActive ? 25 : 50;
+
+    workersRef.current.forEach(({ worker }) => {
+      worker.postMessage({
+        type: 'UPDATE_CONFIG',
+        config: {
+          rpm,
+          temperatureC: effectiveTemp,
+          monteCarloIterations: effectiveIterations,
+          delayMs: baseDelay,
+        },
+      });
+    });
+  }, [isTwinActive, rpm, temperatureC, monteCarloFidelity, isSpikeActive]);
+
+  // Dynamically scale worker pool size delta when streamMultiplier slider changes
+  useEffect(() => {
+    if (!isTwinActive) return;
+    const currentCount = workersRef.current.length;
+    if (currentCount === streamMultiplier) return;
+
+    const subsystems: DigitalTwinSubsystem[] = [
+      'MONTE_CARLO_RUL',
+      'ROTOR_FFT_HARMONICS',
+      'THERMAL_STATE_CHECK',
+    ];
+    const effectiveIterations = isSpikeActive ? 350000 : monteCarloFidelity;
+    const baseDelay = isSpikeActive ? 25 : 50;
+    const computeUrl = resolveAbsoluteTwinComputeUrl();
+    const blobUrl = getOrCreateBlobUrl();
+
+    if (streamMultiplier > currentCount) {
+      for (let i = currentCount; i < streamMultiplier; i++) {
+        const subsystem = subsystems[i % subsystems.length];
+        const worker = new Worker(blobUrl);
+
+        worker.onmessage = (e) => {
+          if (e.data.type === 'RESULT') {
+            const raw = e.data.data;
+            const meta = raw.gateway_metadata || {};
+            const result: DigitalTwinExecutionResult = {
+              id: `res-${Math.random().toString(36).substring(2, 9)}`,
+              timestamp: Date.now(),
+              twin_id: raw.twin_id || twinId,
+              subsystem: raw.subsystem || subsystem,
+              executed_by:
+                raw.executed_by ||
+                (raw.source === 'serverless' ? 'AZURE_SERVERLESS_FUNCTION' : 'AKS_BASE_POD'),
+              source: raw.source || meta.route || 'k8s',
+              impl: raw.impl || 'burstops-digital-twin',
+              node_hostname: raw.node_hostname || raw.hostname || raw.instance_id || 'unknown',
+              instance_id: raw.instance_id,
+              process_pid: raw.process_pid,
+              cpu_time_ms: raw.cpu_time_ms || 45,
+              wall_time_ms: raw.wall_time_ms || e.data.client_wall_ms || 80,
+              physics_output: raw.physics_output || {
+                verification_hash: raw.verification_hash || 'c84f6a91...',
+              },
+              gamma_ratio: meta.gamma_ratio ?? (subsystem === 'THERMAL_STATE_CHECK' ? 0.42 : 8.5),
+              routing_reason: meta.routing_reason ?? (raw.source === 'serverless' ? 'DEFLECTED_SERVERLESS' : 'BASELINE_K8S_NORMAL'),
+              dynamic_threshold_pct: meta.dynamic_threshold_pct,
+              load_velocity_pct_per_s: meta.load_velocity_pct_per_s,
+              composite_utilization_pct: meta.composite_utilization_pct,
+              active_compute_slots: meta.active_compute_slots,
+              prewarm_state: meta.prewarm_state,
+              cold_start: raw.cold_start ?? false,
+            };
+            handleExecutionResultRef.current(result);
+          } else if (e.data.type === 'LOG') {
+            addLogRef.current(e.data.level, e.data.message);
+          }
+        };
+
+        worker.postMessage({
+          type: 'START',
+          config: {
+            twinId,
+            subsystem,
+            rpm,
+            temperatureC: isSpikeActive ? 115 : temperatureC,
+            monteCarloIterations: effectiveIterations,
+            delayMs: baseDelay,
+            targetUrl: computeUrl,
+            clientId: clientIdRef.current,
+            workerId: i,
+          },
+        });
+
+        workersRef.current.push({ worker, url: blobUrl, workerId: i });
+      }
+      addLog('INFO', `[STREAM ADJUST] Scaled stream pool from ${currentCount} to ${streamMultiplier} workers.`);
+    } else if (streamMultiplier < currentCount) {
+      const toRemove = workersRef.current.slice(streamMultiplier);
+      workersRef.current = workersRef.current.slice(0, streamMultiplier);
+      toRemove.forEach(({ worker }) => {
+        try {
+          worker.postMessage({ type: 'STOP' });
+          worker.terminate();
+        } catch {}
+      });
+      addLog('INFO', `[STREAM ADJUST] Scaled down stream pool from ${currentCount} to ${streamMultiplier} workers.`);
+    }
+  }, [streamMultiplier, isTwinActive]);
 
   // Handle temporary fault spike
   const triggerFaultSpike = () => {
@@ -438,6 +602,18 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
                 {totalClientRequests}{' '}
                 <span className="text-[10px] font-normal text-[#605E5C] dark:text-[#A19F9D]">
                   ({aksRoutedCount} AKS / {serverlessRoutedCount} Serverless)
+                </span>
+              </div>
+            </div>
+
+            <div className="px-3 py-2 rounded bg-[#FAF9F8] dark:bg-[#11100F] border border-[#EDEBE9] dark:border-[#292827] text-right">
+              <div className="text-[10px] text-[#605E5C] dark:text-[#A19F9D] uppercase tracking-wider font-semibold">
+                Global Network Tasks
+              </div>
+              <div className="font-mono text-sm font-bold text-azure-600 dark:text-azure-400">
+                {goldenTrio.global_stats?.total_completed ?? (aksRoutedCount + serverlessRoutedCount)}{' '}
+                <span className="text-[10px] font-normal text-[#605E5C] dark:text-[#A19F9D]">
+                  ({goldenTrio.global_stats?.global_aks_completed ?? aksRoutedCount} AKS / {goldenTrio.global_stats?.global_serverless_completed ?? serverlessRoutedCount} Serverless)
                 </span>
               </div>
             </div>
