@@ -77,22 +77,10 @@ data:
             regex: '^$'
 
       - job_name: 'burstops-gateway'
-        kubernetes_sd_configs:
-          - role: pod
-            namespaces:
-              names:
-                - burstops-system
-        relabel_configs:
-          - source_labels: [__meta_kubernetes_pod_label_app]
-            regex: burstops-gateway
-            action: keep
-          - source_labels: [__meta_kubernetes_pod_container_port_number]
-            regex: "8080"
-            action: keep
-        metric_relabel_configs:
-          - source_labels: [__name__]
-            regex: 'gateway_.*'
-            action: keep
+        scheme: https
+        metrics_path: /metrics
+        static_configs:
+          - targets: ['burstops-demo.onrender.com']
 
       - job_name: 'cpu-sim'
         kubernetes_sd_configs:

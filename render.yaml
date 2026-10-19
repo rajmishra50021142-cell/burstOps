@@ -23,6 +23,12 @@ services:
         value: aks-burstops-ga3cvf
       - key: AZURE_FUNCTION_APP
         value: func-burstops-cloud-ga3cvf
+      - key: FUNCTION_UPSTREAM
+        value: "https://func-burstops-cloud-ga3cvf.azurewebsites.net/api/calculate"
+      - key: FUNCTION_KEY
+        sync: false
+      - key: GATEWAY_HMAC_SECRET
+        sync: false
       - key: AZURE_APP_INSIGHTS
         value: log-burstops-ga3cvf
       - key: MAX_RUN_DURATION_SECONDS
