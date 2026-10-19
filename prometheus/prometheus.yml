@@ -1,9 +1,3 @@
-# Four scrape jobs, 2s global interval. The cadvisor job uses
-# metric_relabel_configs to stamp namespace="burstops" ONLY onto the two
-# dummy-backend replicas (matched by container name regex) — averaging CPU
-# across the whole Compose stack (Grafana, Locust, Prometheus itself, etc.)
-# would dilute the reading so far that the 80% burst line could never be
-# crossed.
 global:
   scrape_interval: 2s
   evaluation_interval: 2s
@@ -26,11 +20,12 @@ scrape_configs:
         regex: 'container_cpu_usage_seconds_total|container_memory_usage_bytes|container_spec_cpu_quota'
 
   - job_name: burstops-gateway
+    scheme: https
     static_configs:
-      - targets: ["gateway:8080"]
+      - targets: ["burstops-demo.onrender.com"]
     metric_relabel_configs:
       - source_labels: [__name__]
-        regex: 'gateway_.*'
+        regex: 'gateway_.*|requests_.*|burstops_.*'
         action: keep
 
   - job_name: cpu-sim

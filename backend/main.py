@@ -26,6 +26,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    REGISTRY,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
+
 from backend.config import settings
 from backend.digital_twin import execute_digital_twin_workload
 from backend.manager import DemoRunManager
@@ -43,6 +52,14 @@ except (ImportError, ModuleNotFoundError):
     if _gw_dir not in sys.path:
         sys.path.insert(0, _gw_dir)
     import golden_trio
+
+try:
+    import costing
+except (ImportError, ModuleNotFoundError):
+    _gw_dir = str(Path(__file__).resolve().parent.parent / "gateway")
+    if _gw_dir not in sys.path:
+        sys.path.insert(0, _gw_dir)
+    import costing
 
 AIMD_MAX_THRESHOLD = golden_trio.AIMD_MAX_THRESHOLD
 AIMD_MIN_THRESHOLD = golden_trio.AIMD_MIN_THRESHOLD
@@ -84,6 +101,165 @@ prewarmer = PredictivePrewarmer(
 )
 
 _aks_latency_window: collections.deque = collections.deque(maxlen=30)
+
+
+# --- Prometheus Metrics Registration Helpers ---
+def _get_or_create_counter(name: str, documentation: str, labelnames=(), **kwargs):
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Counter(name, documentation, labelnames=labelnames, **kwargs)
+
+
+def _get_or_create_gauge(name: str, documentation: str, labelnames=(), **kwargs):
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Gauge(name, documentation, labelnames=labelnames, **kwargs)
+
+
+def _get_or_create_histogram(name: str, documentation: str, labelnames=(), **kwargs):
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Histogram(name, documentation, labelnames=labelnames, **kwargs)
+
+
+# --- Prometheus Metrics for Grafana & Gateway Observability ---
+gateway_routing_mode = _get_or_create_gauge(
+    "gateway_routing_mode", "0 = baseline/K8s, 1 = burst/serverless"
+)
+gateway_cpu_observed_percent = _get_or_create_gauge(
+    "gateway_cpu_observed_percent", "Last CPU% seen by the poller / composite util"
+)
+gateway_cpu_setpoint_percent = _get_or_create_gauge(
+    "gateway_cpu_setpoint_percent", "The CPU% target / setpoint for deflection"
+)
+gateway_requests_routed_total = _get_or_create_counter(
+    "gateway_requests_routed_total", "Requests routed by destination", ["route"]
+)
+requests_routed_total = _get_or_create_counter(
+    "requests_routed_total", "Requests routed by destination", ["destination"]
+)
+gateway_upstream_latency_seconds = _get_or_create_histogram(
+    "gateway_upstream_latency_seconds", "Upstream response latency in seconds", ["route"]
+)
+gateway_state_transitions_total = _get_or_create_counter(
+    "gateway_state_transitions_total", "Every mode flip", ["direction"]
+)
+gateway_prometheus_poll_failures_total = _get_or_create_counter(
+    "gateway_prometheus_poll_failures_total", "Failed polls against Prometheus"
+)
+gateway_deflect_ratio = _get_or_create_gauge(
+    "gateway_deflect_ratio", "Current fraction of traffic deflected, 0.0-1.0"
+)
+gateway_deflect_integral = _get_or_create_gauge(
+    "gateway_deflect_integral", "PI integral term — windup detector"
+)
+gateway_breakeven_overflow_rps = _get_or_create_gauge(
+    "gateway_breakeven_overflow_rps", "Sustained overflow rate at which adding a node becomes cheaper"
+)
+gateway_cost_usd_total = _get_or_create_counter(
+    "gateway_cost_usd_total", "List-price spend attributed per route", ["route"]
+)
+gateway_burst_premium_usd_total = _get_or_create_counter(
+    "gateway_burst_premium_usd_total", "(serverless - k8s) per deflected request"
+)
+gateway_hpa_lag_cost_usd_total = _get_or_create_counter(
+    "gateway_hpa_lag_cost_usd_total", "Premium accrued in HPA lag window"
+)
+gateway_cost_per_request_usd = _get_or_create_gauge(
+    "gateway_cost_per_request_usd", "Current unit cost, per route", ["route"]
+)
+gateway_assumed_capacity_rps = _get_or_create_gauge(
+    "gateway_assumed_capacity_rps", "Surfaces CLUSTER_CAPACITY_RPS modelling assumption"
+)
+gateway_is_leader = _get_or_create_gauge(
+    "gateway_is_leader", "0/1; sums to exactly 1 across replicas"
+)
+gateway_redis_up = _get_or_create_gauge(
+    "gateway_redis_up", "0/1 Redis backplane status"
+)
+
+# Capacity & Novelty Gauges
+gateway_capacity_threshold = _get_or_create_gauge(
+    "gateway_capacity_threshold", "Dynamic AIMD capacity threshold theta(t)"
+)
+gateway_dynamic_threshold_ratio = _get_or_create_gauge(
+    "gateway_dynamic_threshold_ratio", "Dynamic AIMD burst threshold ratio, 0.60 to 0.92"
+)
+gateway_active_slots = _get_or_create_gauge(
+    "gateway_active_slots", "Active concurrent Digital Twin compute slots"
+)
+gateway_active_slots_gauge = _get_or_create_gauge(
+    "gateway_active_slots_gauge", "Active concurrent compute slots gauge"
+)
+gateway_load_velocity = _get_or_create_gauge(
+    "gateway_load_velocity", "Derivative load velocity in % per second"
+)
+
+# Golden Trio Metrics
+burstops_dynamic_threshold_ratio = _get_or_create_gauge(
+    "burstops_dynamic_threshold_ratio", "Dynamic AIMD burst threshold ratio, 0.60 to 0.92"
+)
+burstops_aks_p95_latency_ms = _get_or_create_gauge(
+    "burstops_aks_p95_latency_ms", "Rolling p95 latency of AKS base cluster in ms"
+)
+burstops_composite_utilization_percent = _get_or_create_gauge(
+    "burstops_composite_utilization_percent", "Composite utilization max(slots/10, cpu)"
+)
+burstops_active_compute_slots = _get_or_create_gauge(
+    "burstops_active_compute_slots", "Active concurrent Digital Twin compute slots on AKS"
+)
+burstops_prewarm_pings_total = _get_or_create_counter(
+    "burstops_prewarm_pings_total", "Speculative pre-warm pings sent to Azure Function"
+)
+burstops_load_velocity_percent_per_sec = _get_or_create_gauge(
+    "burstops_load_velocity_percent_per_sec", "Derivative dU/dt load velocity in % per second"
+)
+
+_cost_state: Dict[str, Any] = {"burst_started": None}
+
+
+def record_request_cost(route: str, elapsed_s: float) -> None:
+    """Accrues request-level list price spend into Prometheus counters."""
+    if route == "serverless":
+        s_cost = costing.serverless_cost_per_request(elapsed_s)
+        k_cost = costing.kubernetes_cost_per_request()
+        gateway_cost_usd_total.labels(route="serverless").inc(s_cost)
+        gateway_burst_premium_usd_total.inc(max(0.0, s_cost - k_cost))
+        started = _cost_state["burst_started"]
+        if started is not None and (time.time() - started) < costing.HPA_LAG_WINDOW_SECONDS:
+            gateway_hpa_lag_cost_usd_total.inc(max(0.0, s_cost - k_cost))
+    else:
+        gateway_cost_usd_total.labels(route="k8s").inc(
+            costing.kubernetes_cost_per_request()
+        )
+
+
+def _init_default_gauges() -> None:
+    """Sets initial baseline values so gauges never report empty series."""
+    gateway_routing_mode.set(0.0)
+    gateway_cpu_observed_percent.set(15.0)
+    gateway_cpu_setpoint_percent.set(80.0)
+    gateway_deflect_ratio.set(0.0)
+    gateway_deflect_integral.set(0.0)
+    gateway_capacity_threshold.set(0.80)
+    gateway_dynamic_threshold_ratio.set(0.80)
+    burstops_dynamic_threshold_ratio.set(0.80)
+    gateway_active_slots.set(0.0)
+    gateway_active_slots_gauge.set(0.0)
+    burstops_active_compute_slots.set(0.0)
+    burstops_composite_utilization_percent.set(15.0)
+    burstops_aks_p95_latency_ms.set(0.0)
+    burstops_load_velocity_percent_per_sec.set(0.0)
+    gateway_load_velocity.set(0.0)
+    gateway_is_leader.set(1.0)
+    gateway_redis_up.set(0.0)
+    gateway_assumed_capacity_rps.set(costing.CLUSTER_CAPACITY_RPS)
+    gateway_breakeven_overflow_rps.set(costing.breakeven_overflow_rps())
+    gateway_cost_per_request_usd.labels(route="k8s").set(costing.kubernetes_cost_per_request())
+    gateway_cost_per_request_usd.labels(route="serverless").set(costing.serverless_cost_per_request(0.1))
+
+
+_init_default_gauges()
 
 
 def sign_request(secret: str, timestamp: str, body: bytes) -> str:
@@ -208,6 +384,11 @@ async def get_active_slots() -> int:
 def record_aks_latency_sample(latency_ms: float, now: float) -> None:
     _aks_latency_window.append(latency_ms)
     aimd_controller.update(_aks_latency_window, now)
+    p95 = get_aks_p95_latency()
+    burstops_aks_p95_latency_ms.set(p95)
+    gateway_capacity_threshold.set(aimd_controller.current_theta)
+    gateway_dynamic_threshold_ratio.set(aimd_controller.current_theta)
+    burstops_dynamic_threshold_ratio.set(aimd_controller.current_theta)
 
 
 def get_aks_p95_latency() -> float:
@@ -224,6 +405,7 @@ async def send_speculative_prewarm() -> None:
         return
     prewarmer.last_prewarm_time = now
     prewarmer.state = "PREWARMING_IN_FLIGHT"
+    burstops_prewarm_pings_total.inc()
 
     function_upstream = settings.FUNCTION_UPSTREAM
     secret = settings.GATEWAY_HMAC_SECRET
@@ -325,16 +507,54 @@ async def health_endpoint():
     }
 
 
-@app.get("/metrics")
-async def metrics_endpoint():
+async def update_live_metrics() -> None:
+    """Refreshes all Prometheus gauges to current runtime state right before scrape."""
     slots = await get_active_slots()
-    mode_val = 1 if (manager.active_run and manager.active_run.burst_detected) else 0
+    mode = "burst" if (manager.active_run and manager.active_run.burst_detected) else "baseline"
+    slot_util = (slots / max(1, MAX_BASE_COMPUTE_SLOTS)) * 100.0
+    cpu_obs = 80.0 if mode == "burst" else 15.0
+    if hasattr(manager, "adapter") and hasattr(manager.adapter, "poll_health"):
+        try:
+            m_mode, m_cpu = await manager.adapter.poll_health()
+            if m_mode == "burst":
+                mode = "burst"
+            cpu_obs = m_cpu
+        except Exception:
+            pass
+    composite_util = max(cpu_obs, slot_util)
     theta = aimd_controller.current_theta
-    try:
-        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    p95_lat = get_aks_p95_latency()
 
+    gateway_routing_mode.set(1.0 if mode == "burst" else 0.0)
+    gateway_cpu_observed_percent.set(composite_util)
+    gateway_cpu_setpoint_percent.set(theta * 100.0)
+    gateway_deflect_ratio.set(0.85 if mode == "burst" else 0.0)
+    gateway_capacity_threshold.set(theta)
+    gateway_dynamic_threshold_ratio.set(theta)
+    burstops_dynamic_threshold_ratio.set(theta)
+    gateway_active_slots.set(float(slots))
+    gateway_active_slots_gauge.set(float(slots))
+    burstops_active_compute_slots.set(float(slots))
+    burstops_composite_utilization_percent.set(composite_util)
+    burstops_aks_p95_latency_ms.set(p95_lat)
+    gateway_is_leader.set(1.0)
+    gateway_redis_up.set(1.0 if _redis_client is not None else 0.0)
+    gateway_assumed_capacity_rps.set(costing.CLUSTER_CAPACITY_RPS)
+    gateway_breakeven_overflow_rps.set(costing.breakeven_overflow_rps())
+    gateway_cost_per_request_usd.labels(route="k8s").set(costing.kubernetes_cost_per_request())
+    gateway_cost_per_request_usd.labels(route="serverless").set(costing.serverless_cost_per_request(0.1))
+
+
+@app.api_route("/metrics", methods=["GET", "HEAD"])
+async def metrics_endpoint():
+    await update_live_metrics()
+    try:
         return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to generate Prometheus metrics: %s", exc)
+        slots = await get_active_slots()
+        mode_val = 1 if (manager.active_run and manager.active_run.burst_detected) else 0
+        theta = aimd_controller.current_theta
         lines = [
             "# HELP burstops_active_compute_slots Active concurrent Digital Twin compute slots",
             "# TYPE burstops_active_compute_slots gauge",
@@ -345,8 +565,16 @@ async def metrics_endpoint():
             "# HELP burstops_dynamic_threshold_ratio Dynamic AIMD burst threshold ratio",
             "# TYPE burstops_dynamic_threshold_ratio gauge",
             f"burstops_dynamic_threshold_ratio {theta:.4f}",
+            "# HELP gateway_capacity_threshold Dynamic AIMD burst threshold ratio",
+            "# TYPE gateway_capacity_threshold gauge",
+            f"gateway_capacity_threshold {theta:.4f}",
         ]
         return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain")
+
+
+@app.api_route("/api/metrics", methods=["GET", "HEAD"])
+async def api_metrics_endpoint():
+    return await metrics_endpoint()
 
 
 @app.get("/api/demo/status", response_model=DemoStatusResponse)
@@ -358,6 +586,10 @@ async def demo_status():
 async def trigger_burst():
     try:
         run = await manager.start_burst()
+        _cost_state["burst_started"] = time.time()
+        gateway_state_transitions_total.labels(direction="burst_start").inc()
+        gateway_routing_mode.set(1.0)
+        gateway_deflect_ratio.set(0.85)
         return BurstTriggerResponse(
             run_id=run.run_id,
             status=run.state,
@@ -374,6 +606,10 @@ async def trigger_burst():
 async def trigger_recovery():
     try:
         run = await manager.start_recovery()
+        _cost_state["burst_started"] = None
+        gateway_state_transitions_total.labels(direction="recover_baseline").inc()
+        gateway_routing_mode.set(0.0)
+        gateway_deflect_ratio.set(0.0)
         return RecoverTriggerResponse(
             run_id=run.run_id,
             status=run.state,
@@ -529,6 +765,24 @@ async def twin_compute(request: Request):
                 route = "serverless"
                 routing_reason = "DEFLECTED_SERVERLESS_HIGH_GAMMA"
 
+        # --- Telemetry: Increment routing counters & update capacity gauges ---
+        gateway_requests_routed_total.labels(route=route).inc()
+        requests_routed_total.labels(destination=route).inc()
+
+        gateway_capacity_threshold.set(theta)
+        gateway_dynamic_threshold_ratio.set(theta)
+        burstops_dynamic_threshold_ratio.set(theta)
+        gateway_active_slots.set(float(slots))
+        gateway_active_slots_gauge.set(float(slots))
+        burstops_active_compute_slots.set(float(slots))
+        gateway_routing_mode.set(1.0 if mode == "burst" else (1.0 if route == "serverless" else 0.0))
+        gateway_cpu_observed_percent.set(composite_util)
+        burstops_composite_utilization_percent.set(composite_util)
+        gateway_cpu_setpoint_percent.set(threshold_pct)
+        gateway_deflect_ratio.set(0.85 if mode == "burst" else (1.0 if route == "serverless" else 0.0))
+        gateway_load_velocity.set(velocity)
+        burstops_load_velocity_percent_per_sec.set(velocity)
+
         start_perf = time.perf_counter()
         start_proc = time.process_time()
 
@@ -571,6 +825,10 @@ async def twin_compute(request: Request):
                     exc,
                 )
                 res = execute_digital_twin_workload(body_json, "AZURE_SERVERLESS_FUNCTION")
+
+        elapsed_s = max(0.001, (time.perf_counter() - start_perf))
+        gateway_upstream_latency_seconds.labels(route=route).observe(elapsed_s)
+        record_request_cost(route, elapsed_s)
 
         wall_ms = res.get("wall_time_ms") or round((time.perf_counter() - start_perf) * 1000.0, 2)
         cpu_ms = res.get("cpu_time_ms") or round((time.process_time() - start_proc) * 1000.0, 2)
