@@ -1,24 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Flame,
-  RotateCcw,
   Play,
   Square,
-  Loader2,
-  Cpu,
   ShieldCheck,
-  CheckCircle2,
   Zap,
-  Activity,
-  Gauge,
-  TrendingUp,
-  Layers,
   Sliders,
   Server,
-  AlertTriangle,
   Radio,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import {
   ActionState,
@@ -81,14 +70,7 @@ const DEFAULT_GOLDEN_TRIO: GoldenTrioTelemetry = {
 
 export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
   status,
-  onTriggerBurst,
-  onTriggerRecover,
-  isActionLoading,
 }) => {
-  // Legacy status
-  const currentState: ActionState = status?.state || 'Ready';
-  const canBurst = Boolean(status?.can_burst && !isActionLoading);
-  const canRecover = Boolean(status?.can_recover && !isActionLoading);
   const currentRun: RunDetail | undefined = status?.current_run || status?.last_completed_run || undefined;
 
   // Digital Twin Interactive State
@@ -104,7 +86,6 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
   const [goldenTrio, setGoldenTrio] = useState<GoldenTrioTelemetry>(DEFAULT_GOLDEN_TRIO);
   const [executions, setExecutions] = useState<DigitalTwinExecutionResult[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [showLegacyCanary, setShowLegacyCanary] = useState<boolean>(false);
 
   // Real-time aggregate counters for this user session
   const [totalClientRequests, setTotalClientRequests] = useState<number>(0);
@@ -561,11 +542,6 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
   const activeSlots = goldenTrio.capacity_model.active_compute_slots || 0;
   const maxSlots = goldenTrio.capacity_model.aks_base_capacity_slots || 10;
   const compositeU = goldenTrio.capacity_model.composite_utilization_pct || 0;
-  const thresholdPct = goldenTrio.novelty_1_aimd_threshold.current_threshold_pct || 80.0;
-  const p95Latency = goldenTrio.novelty_1_aimd_threshold.aks_p95_latency_ms || 450.0;
-  const sloTarget = goldenTrio.novelty_1_aimd_threshold.slo_target_p95_ms || 650.0;
-  const velocity = goldenTrio.novelty_2_predictive_prewarm.load_velocity_pct_per_s || 0.0;
-  const prewarmState = goldenTrio.novelty_2_predictive_prewarm.prewarm_state || 'IDLE';
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto select-none">
@@ -877,254 +853,13 @@ export const LoadTestBlade: React.FC<LoadTestBladeProps> = ({
         </div>
       </div>
 
-      {/* 3. THE GOLDEN TRIO NOVEL SYSTEMS MONITOR */}
-      <div className="azure-card bg-white dark:bg-[#1B1A19] border border-[#EDEBE9] dark:border-[#292827] rounded-sm p-5 shadow-xs space-y-4">
-        <div className="pb-3 border-b border-[#EDEBE9] dark:border-[#292827]">
-          <h3 className="text-sm font-semibold text-[#323130] dark:text-white flex items-center gap-2">
-            <Gauge className="w-4 h-4 text-purple-500" />
-            The Golden Trio: Novelty Systems Telemetry
-          </h3>
-          <p className="text-xs text-[#605E5C] dark:text-[#A19F9D] mt-0.5">
-            Real-time telemetry from the three research mechanisms active in the BurstOps layer-7 gateway.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Novelty 1: Self-Tuning AIMD Threshold */}
-          <div className="p-4 rounded-sm bg-[#FAF9F8] dark:bg-[#11100F] border border-[#EDEBE9] dark:border-[#292827] space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-[#323130] dark:text-white flex items-center gap-1.5">
-                <Activity className="w-3.5 h-3.5 text-azure-500" />
-                Novelty 1: AIMD Threshold θ(t)
-              </span>
-              <span className="font-mono text-xs font-bold text-azure-600 dark:text-azure-400">
-                {thresholdPct.toFixed(1)}%
-              </span>
-            </div>
-            <div className="space-y-1 text-xs">
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>Rolling p95 Latency:</span>
-                <span className="font-mono font-semibold text-[#323130] dark:text-white">
-                  {p95Latency.toFixed(0)} ms
-                </span>
-              </div>
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>SLO Target Ceiling:</span>
-                <span className="font-mono text-emerald-600 dark:text-emerald-400">
-                  {sloTarget.toFixed(0)} ms
-                </span>
-              </div>
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>Operating Bounds:</span>
-                <span className="font-mono text-slate-500">[60.0% – 92.0%]</span>
-              </div>
-            </div>
-            <p className="text-[11px] text-[#605E5C] dark:text-[#A19F9D] leading-tight border-t border-[#EDEBE9] dark:border-[#292827] pt-2">
-              Multiplicative Decrease lowers θ(t) if p95 exceeds 650ms to prevent pod thrashing; Additive Increase raises θ(t) to maximize AKS FinOps cost savings.
-            </p>
-          </div>
-
-          {/* Novelty 2: Predictive Pre-Warming */}
-          <div className="p-4 rounded-sm bg-[#FAF9F8] dark:bg-[#11100F] border border-[#EDEBE9] dark:border-[#292827] space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-[#323130] dark:text-white flex items-center gap-1.5">
-                <TrendingUp className="w-3.5 h-3.5 text-amber-500" />
-                Novelty 2: Pre-Warming (dU/dt)
-              </span>
-              <span
-                className={`font-mono text-[11px] px-2 py-0.5 rounded font-semibold ${
-                  prewarmState === 'WARM_READY'
-                    ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
-                    : prewarmState === 'PREWARMING_IN_FLIGHT'
-                    ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 animate-pulse'
-                    : 'bg-slate-100 dark:bg-[#252423] text-slate-500'
-                }`}
-              >
-                {prewarmState}
-              </span>
-            </div>
-            <div className="space-y-1 text-xs">
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>Load Velocity (dU/dt):</span>
-                <span className="font-mono font-semibold text-[#323130] dark:text-white">
-                  {velocity >= 0 ? `+${velocity.toFixed(2)}` : velocity.toFixed(2)}%/s
-                </span>
-              </div>
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>Trigger Threshold:</span>
-                <span className="font-mono text-slate-500">≥ +5.00%/s</span>
-              </div>
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>Cold Starts Saved:</span>
-                <span className="font-mono font-bold text-purple-600 dark:text-purple-400">
-                  {goldenTrio.novelty_2_predictive_prewarm.prewarm_saves_count} Instances
-                </span>
-              </div>
-            </div>
-            <p className="text-[11px] text-[#605E5C] dark:text-[#A19F9D] leading-tight border-t border-[#EDEBE9] dark:border-[#292827] pt-2">
-              Fires speculative HMAC-signed pre-warm pings to Azure Functions 4 seconds before breach, eliminating serverless cold start penalties.
-            </p>
-          </div>
-
-          {/* Novelty 3: Semantic Compute-to-Communication Ratio */}
-          <div className="p-4 rounded-sm bg-[#FAF9F8] dark:bg-[#11100F] border border-[#EDEBE9] dark:border-[#292827] space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-[#323130] dark:text-white flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5 text-purple-500" />
-                Novelty 3: Semantic Ratio γ
-              </span>
-              <span className="font-mono text-xs font-bold text-purple-600 dark:text-purple-400">
-                Threshold: 1.50
-              </span>
-            </div>
-            <div className="space-y-1 text-xs">
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>MONTE_CARLO_RUL:</span>
-                <span className="font-mono font-bold text-purple-600 dark:text-purple-400">
-                  γ ≈ 9.17 (Burst Priority)
-                </span>
-              </div>
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>ROTOR_FFT:</span>
-                <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
-                  γ ≈ 6.33 (Burst Candidate)
-                </span>
-              </div>
-              <div className="flex justify-between text-[#605E5C] dark:text-[#A19F9D]">
-                <span>THERMAL_CHECK:</span>
-                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                  γ ≈ 0.42 (Pinned to AKS)
-                </span>
-              </div>
-            </div>
-            <p className="text-[11px] text-[#605E5C] dark:text-[#A19F9D] leading-tight border-t border-[#EDEBE9] dark:border-[#292827] pt-2">
-              Pins low-γ lightweight sensor checks to AKS to avoid network serialization overhead; deflects high-γ math-intensive tasks to Azure Functions.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* 4. REAL-TIME EXECUTION PROVENANCE & LOG STREAM CONSOLE */}
+      {/* 3. REAL-TIME EXECUTION PROVENANCE & LOG STREAM CONSOLE */}
       <ExecutionConsole
         executions={executions}
         logs={logs}
         title="Live Wind Turbine Execution Provenance Stream"
         activeRunId={currentRun?.run_id || twinId}
       />
-
-      {/* 5. LEGACY CANARY & SYNTHETIC SURGE CONTROLLER (COLLAPSIBLE FOR BACKWARD COMPATIBILITY) */}
-      <div className="azure-card bg-white dark:bg-[#1B1A19] border border-[#EDEBE9] dark:border-[#292827] rounded-sm p-4 shadow-xs">
-        <button
-          onClick={() => setShowLegacyCanary(!showLegacyCanary)}
-          className="w-full flex items-center justify-between text-left text-xs font-semibold text-[#323130] dark:text-white cursor-pointer"
-        >
-          <span className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-azure-500" />
-            Legacy Synthetic Canary & Mathematical Sieve Verification Controller
-          </span>
-          <span className="flex items-center gap-1 text-[11px] font-mono text-[#605E5C] dark:text-[#A19F9D]">
-            {showLegacyCanary ? 'Hide Legacy Controls' : 'Show Legacy Controls (Locust/Canary Mode)'}
-            {showLegacyCanary ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </span>
-        </button>
-
-        {showLegacyCanary && (
-          <div className="mt-4 pt-4 border-t border-[#EDEBE9] dark:border-[#292827] space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Legacy Action 1: Surge */}
-              <button
-                onClick={onTriggerBurst}
-                disabled={!canBurst}
-                className={`p-3.5 rounded-sm border text-left transition-all ${
-                  canBurst
-                    ? 'bg-slate-50 dark:bg-[#11100F] border-azure-400 hover:shadow-xs cursor-pointer'
-                    : 'bg-slate-50 dark:bg-[#11100F] border-[#EDEBE9] dark:border-[#292827] opacity-60 cursor-not-allowed'
-                }`}
-              >
-                <div className="text-[10px] font-mono uppercase text-azure-600 dark:text-azure-400 font-semibold mb-1">
-                  Legacy Action 1: Synthetic Surge
-                </div>
-                <div className="font-semibold text-xs text-[#323130] dark:text-white flex items-center gap-2">
-                  {isActionLoading && !canBurst ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-azure-500" />
-                  ) : (
-                    <Play className="w-3.5 h-3.5 text-azure-500 fill-azure-500" />
-                  )}
-                  Run Synthetic Load Surge
-                </div>
-                <p className="text-[11px] text-[#605E5C] dark:text-[#A19F9D] mt-1">
-                  Triggers legacy synthetic traffic generator to verify backward compatibility.
-                </p>
-              </button>
-
-              {/* Legacy Action 2: Recover */}
-              <button
-                onClick={onTriggerRecover}
-                disabled={!canRecover}
-                className={`p-3.5 rounded-sm border text-left transition-all ${
-                  canRecover
-                    ? 'bg-slate-50 dark:bg-[#11100F] border-emerald-400 hover:shadow-xs cursor-pointer'
-                    : 'bg-slate-50 dark:bg-[#11100F] border-[#EDEBE9] dark:border-[#292827] opacity-60 cursor-not-allowed'
-                }`}
-              >
-                <div className="text-[10px] font-mono uppercase text-emerald-600 dark:text-emerald-400 font-semibold mb-1">
-                  Legacy Action 2: Baseline Recovery
-                </div>
-                <div className="font-semibold text-xs text-[#323130] dark:text-white flex items-center gap-2">
-                  {isActionLoading && canRecover ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
-                  ) : (
-                    <RotateCcw className="w-3.5 h-3.5 text-emerald-500" />
-                  )}
-                  Recover Baseline (Cool &lt; 60%)
-                </div>
-                <p className="text-[11px] text-[#605E5C] dark:text-[#A19F9D] mt-1">
-                  Halts synthetic load and verifies recovery canary.
-                </p>
-              </button>
-            </div>
-
-            {/* Sieve boxes */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-              <div className="p-3 rounded-sm bg-[#FAF9F8] dark:bg-[#11100F] border border-purple-200 dark:border-purple-800/50 font-mono space-y-1">
-                <div className="flex items-center justify-between font-sans font-semibold text-purple-700 dark:text-purple-300 text-[11px]">
-                  <span>Serverless Sieve Parity</span>
-                  {currentRun?.serverless_verified ? (
-                    <span className="text-purple-600 dark:text-purple-400">✓ VERIFIED</span>
-                  ) : (
-                    <span className="text-slate-400">PENDING</span>
-                  )}
-                </div>
-                {currentRun?.burst_canary ? (
-                  <div className="text-[11px] text-[#605E5C] dark:text-[#A19F9D]">
-                    Primes: {currentRun.burst_canary.prime_count} • Sum: {currentRun.burst_canary.prime_sum} • Source: {currentRun.burst_canary.source}
-                  </div>
-                ) : (
-                  <div className="text-slate-400 text-[10px] italic">Awaiting burst transition sample...</div>
-                )}
-              </div>
-
-              <div className="p-3 rounded-sm bg-[#FAF9F8] dark:bg-[#11100F] border border-emerald-200 dark:border-emerald-800/50 font-mono space-y-1">
-                <div className="flex items-center justify-between font-sans font-semibold text-emerald-700 dark:text-emerald-300 text-[11px]">
-                  <span>Kubernetes Baseline Parity</span>
-                  {currentRun?.baseline_verified ? (
-                    <span className="text-emerald-600 dark:text-emerald-400">✓ RECOVERED</span>
-                  ) : (
-                    <span className="text-slate-400">PENDING</span>
-                  )}
-                </div>
-                {currentRun?.recovery_canary ? (
-                  <div className="text-[11px] text-[#605E5C] dark:text-[#A19F9D]">
-                    Primes: {currentRun.recovery_canary.prime_count} • Sum: {currentRun.recovery_canary.prime_sum} • Source: {currentRun.recovery_canary.source}
-                  </div>
-                ) : (
-                  <div className="text-slate-400 text-[10px] italic">Awaiting recovery signal sample...</div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 };

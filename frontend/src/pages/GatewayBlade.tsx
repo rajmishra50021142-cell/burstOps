@@ -5,7 +5,6 @@ import {
   GoldenTrioTelemetry,
 } from '../types';
 import { fetchGoldenTrioTelemetry } from '../lib/gatewayApi';
-import { Server, Activity, TrendingUp, Layers, Cpu, ShieldCheck } from 'lucide-react';
 
 interface GatewayBladeProps {
   metrics: ParsedGatewayMetrics | null;
@@ -42,13 +41,7 @@ export const GatewayBlade: React.FC<GatewayBladeProps> = ({
     };
   }, []);
 
-  const activeSlots = trioData?.capacity_model.active_compute_slots ?? (isBurst ? 8 : 2);
-  const maxSlots = trioData?.capacity_model.aks_base_capacity_slots ?? 10;
-  const compositeU = trioData?.capacity_model.composite_utilization_pct ?? (metrics?.cpuObservedPercent ?? 20.0);
   const thetaPct = trioData?.novelty_1_aimd_threshold.current_threshold_pct ?? 80.0;
-  const p95Latency = trioData?.novelty_1_aimd_threshold.aks_p95_latency_ms ?? 450.0;
-  const velocity = trioData?.novelty_2_predictive_prewarm.load_velocity_pct_per_s ?? 0.0;
-  const prewarmState = trioData?.novelty_2_predictive_prewarm.prewarm_state ?? 'IDLE';
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto select-none">
@@ -137,104 +130,6 @@ export const GatewayBlade: React.FC<GatewayBladeProps> = ({
               HMAC-SHA256 Signed
             </span>
           </div>
-        </div>
-      </div>
-
-      {/* Explicit Capacity Model Card */}
-      <div className="azure-card bg-white dark:bg-[#1B1A19] border border-[#EDEBE9] dark:border-[#292827] rounded-sm p-5 shadow-xs space-y-4">
-        <div className="flex items-center justify-between pb-3 border-b border-[#EDEBE9] dark:border-[#292827]">
-          <div className="flex items-center gap-2">
-            <Server className="w-4 h-4 text-emerald-500" />
-            <h3 className="text-sm font-semibold text-[#323130] dark:text-white">
-              Base AKS Pod Capacity Architecture (&quot;80% of What?&quot;)
-            </h3>
-          </div>
-          <span className="font-mono text-xs px-2.5 py-1 rounded bg-[#FAF9F8] dark:bg-[#11100F] border border-[#EDEBE9] dark:border-[#292827] text-azure-600 dark:text-azure-400 font-bold">
-            {activeSlots} / {maxSlots} Active Slots ({compositeU.toFixed(1)}% Load)
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-          <div className="p-3 bg-[#FAF9F8] dark:bg-[#11100F] rounded-sm border border-[#EDEBE9] dark:border-[#292827] space-y-1">
-            <div className="text-[11px] text-[#605E5C] dark:text-[#A19F9D]">Pod Resource Envelopes</div>
-            <div className="font-mono font-semibold text-[#323130] dark:text-white">
-              Requests: 250m CPU / 256Mi RAM
-            </div>
-            <div className="font-mono font-semibold text-[#323130] dark:text-white">
-              Limits: 500m CPU (0.5 vCPU) / 512Mi RAM
-            </div>
-          </div>
-
-          <div className="p-3 bg-[#FAF9F8] dark:bg-[#11100F] rounded-sm border border-[#EDEBE9] dark:border-[#292827] space-y-1">
-            <div className="text-[11px] text-[#605E5C] dark:text-[#A19F9D]">Compute Concurrency Slots</div>
-            <div className="font-mono font-semibold text-[#323130] dark:text-white">
-              MAX_BASE_COMPUTE_SLOTS = 10
-            </div>
-            <div className="text-[11px] text-slate-500">
-              100% Capacity = 10 concurrent heavy tasks.
-            </div>
-          </div>
-
-          <div className="p-3 bg-[#FAF9F8] dark:bg-[#11100F] rounded-sm border border-[#EDEBE9] dark:border-[#292827] space-y-1">
-            <div className="text-[11px] text-[#605E5C] dark:text-[#A19F9D]">Composite Utilization Formula</div>
-            <div className="font-mono font-semibold text-azure-600 dark:text-azure-400">
-              U = max(slots/10, cpu_ratio)
-            </div>
-            <div className="text-[11px] text-slate-500">
-              Threshold = exactly 8 slots or 400m vCPU.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* The Golden Trio Research Mechanisms */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Novelty 1 */}
-        <div className="azure-card bg-white dark:bg-[#1B1A19] border border-[#EDEBE9] dark:border-[#292827] rounded-sm p-4 shadow-xs space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-[#323130] dark:text-white flex items-center gap-1.5">
-              <Activity className="w-3.5 h-3.5 text-azure-500" />
-              Novelty 1: Self-Tuning AIMD θ(t)
-            </span>
-            <span className="font-mono text-xs font-bold text-azure-600 dark:text-azure-400">
-              {thetaPct.toFixed(1)}%
-            </span>
-          </div>
-          <p className="text-xs text-[#605E5C] dark:text-[#A19F9D]">
-            Continuously monitors AKS p95 latency (now {p95Latency.toFixed(0)}ms) against 650ms target. Lowers threshold if latency spikes, raises threshold to save cost when healthy.
-          </p>
-        </div>
-
-        {/* Novelty 2 */}
-        <div className="azure-card bg-white dark:bg-[#1B1A19] border border-[#EDEBE9] dark:border-[#292827] rounded-sm p-4 shadow-xs space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-[#323130] dark:text-white flex items-center gap-1.5">
-              <TrendingUp className="w-3.5 h-3.5 text-amber-500" />
-              Novelty 2: Pre-Warming (dU/dt)
-            </span>
-            <span className="font-mono text-xs font-bold text-amber-600 dark:text-amber-400">
-              {prewarmState}
-            </span>
-          </div>
-          <p className="text-xs text-[#605E5C] dark:text-[#A19F9D]">
-            Measures load velocity ({velocity >= 0 ? `+${velocity.toFixed(1)}` : velocity.toFixed(1)}%/s). Speculatively pre-warms Azure Functions before threshold breach to eliminate cold starts.
-          </p>
-        </div>
-
-        {/* Novelty 3 */}
-        <div className="azure-card bg-white dark:bg-[#1B1A19] border border-[#EDEBE9] dark:border-[#292827] rounded-sm p-4 shadow-xs space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-[#323130] dark:text-white flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-purple-500" />
-              Novelty 3: Semantic Router γ
-            </span>
-            <span className="font-mono text-xs font-bold text-purple-600 dark:text-purple-400">
-              γ ≥ 1.50
-            </span>
-          </div>
-          <p className="text-xs text-[#605E5C] dark:text-[#A19F9D]">
-            Evaluates compute-to-communication ratio. Pins light sensor checks to AKS; defers heavy Monte Carlo and FFT harmonics to Azure Serverless.
-          </p>
         </div>
       </div>
     </div>
